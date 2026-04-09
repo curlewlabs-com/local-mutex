@@ -69,7 +69,7 @@ Two runners running the same build in parallel would otherwise race on writing t
 
 | Name | Required | Description |
 |---|---|---|
-| `name` | yes | Lock identifier. Used as the basename of the lock file under `/tmp`. Pick a name that describes the resource being protected. Characters outside `[a-zA-Z0-9._-]` are sanitized to underscores. Names longer than 200 characters are truncated. Names that share the first 200 characters after sanitization will collide and share the same lock. |
+| `name` | yes | Lock identifier. Used to form the lock file basename under `/tmp` (as `local-mutex-<sanitized-name>.lock`). Pick a name that describes the resource being protected. Characters outside `[a-zA-Z0-9._-]` are sanitized to underscores. Sanitization is lossy: names that differ only in non-allowed characters will map to the same lock (`foo$bar`, `foo@bar`, and `foo bar` all become `foo_bar`). Names longer than 200 characters are truncated. Names that share the first 200 characters after sanitization will collide and share the same lock. Empty or whitespace-only values are rejected. |
 | `run` | yes | Shell command to execute while holding the lock. Runs under `/bin/sh`. Multi-line scripts work. Empty or whitespace-only `run` is rejected. |
 
 ## How it works
