@@ -63,6 +63,8 @@ If multiple runners hit this job at the same time, the update step on each one w
 
 Two runners running the same build in parallel would otherwise race on writing to `/shared/dep-cache/<hash>/`. Wrapping the build+publish step in `local-mutex` makes the second runner wait for the first to finish; if your build script checks whether the entry already exists and exits early when it does, the second runner becomes a fast no-op.
 
+[`curlewlabs-com/local-cache`](https://github.com/curlewlabs-com/local-cache) — a sister composite action that provides a local-disk cache for self-hosted runners — uses `local-mutex` for exactly this pattern. Its `save/action.yml` wraps the per-key write step in `local-mutex` so concurrent saves of the same cache key serialize via `lockf`/`flock` instead of needing per-script PID tracking and stale-lock recovery. See its [`save/action.yml`](https://github.com/curlewlabs-com/local-cache/blob/main/save/action.yml) for a working production usage.
+
 ## Inputs
 
 | Name | Required | Description |
