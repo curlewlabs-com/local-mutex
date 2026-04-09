@@ -579,11 +579,18 @@ jobs:
       # "Missing binary" test, which symlinks tr into the fake PATH
       # precisely to exercise the lockf/flock probe without tripping the
       # tr probe.
+      #
+      # `|| true` on the `command -v` probes is required because step
+      # shells run under `bash -e` by default: a bare `x=$(command -v
+      # nosuchcmd)` aborts the step when the probe fails, before we ever
+      # reach the test assertions. Ubuntu runners don't ship `lockf` and
+      # macOS runners don't ship `flock`, so at least one probe always
+      # fails on each platform.
       - name: Missing tr(1) fails with clear error
         run: |
           test_dir=$(mktemp -d)
-          lockf_path=$(command -v lockf 2>/dev/null)
-          flock_path=$(command -v flock 2>/dev/null)
+          lockf_path=$(command -v lockf 2>/dev/null || true)
+          flock_path=$(command -v flock 2>/dev/null || true)
           [ -n "$lockf_path" ] && ln -s "$lockf_path" "$test_dir/lockf"
           [ -n "$flock_path" ] && ln -s "$flock_path" "$test_dir/flock"
 
