@@ -105,9 +105,12 @@ jobs:
           # Invoke the script directly (rather than via `uses: ./`) so we
           # can redirect stdout and stderr to separate files and verify
           # each stream ends up where it should. The action itself just
-          # runs `sh lib/local-mutex.sh`, so this exercises the same code
-          # path while giving the test access to the streams.
-          sh lib/local-mutex.sh t-stdio \
+          # runs the same script via `sh "$ACTION_PATH/lib/local-mutex.sh"`,
+          # so this exercises the same code path while giving the test
+          # access to the streams. Using an absolute path via
+          # $GITHUB_WORKSPACE keeps the invocation robust if a future step
+          # changes the working directory.
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-stdio \
             'echo "STDOUT_MARKER_12345"; echo "STDERR_MARKER_67890" >&2' \
             > /tmp/stdout-capture 2> /tmp/stderr-capture
 
@@ -163,9 +166,9 @@ jobs:
           # two lock holders can plausibly take tens of ms under CI load.
           tolerance=100000000
 
-          sh lib/local-mutex.sh conc-2 \
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh conc-2 \
             "$ts > /tmp/conc-1-start; sleep $hold_sleep; $ts > /tmp/conc-1-end" &
-          sh lib/local-mutex.sh conc-2 \
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh conc-2 \
             "$ts > /tmp/conc-2-start; sleep $hold_sleep; $ts > /tmp/conc-2-end" &
           wait
 
@@ -208,7 +211,7 @@ jobs:
           # that an interleave would be visible.
           i=1
           while [ $i -le 20 ]; do
-            sh lib/local-mutex.sh stress-20 "echo \"${i}-s\" >> /tmp/stress-log; sleep 0.05; echo \"${i}-e\" >> /tmp/stress-log" &
+            sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh stress-20 "echo \"${i}-s\" >> /tmp/stress-log; sleep 0.05; echo \"${i}-e\" >> /tmp/stress-log" &
             i=$((i + 1))
           done
           wait
@@ -255,8 +258,10 @@ jobs:
           # (parallel run can be 3 or 4 depending on second-boundary timing,
           # serial run would be 6 or 7 — easily distinguished).
           start=$(date +%s)
-          sh lib/local-mutex.sh name-a 'sleep 3' &
-          sh lib/local-mutex.sh name-b 'sleep 3' &
+          # parallel ≈ 3s, serial ≈ 6s, so an upper bound of 4s catches
+          # regressions while tolerating runner jitter.
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh name-a 'sleep 3' &
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh name-b 'sleep 3' &
           wait
           end=$(date +%s)
           elapsed=$((end - start))
@@ -272,7 +277,7 @@ jobs:
           rm -f /tmp/local-mutex-kill-test.lock
 
           # Background a holder that sleeps for a long time
-          sh lib/local-mutex.sh kill-test 'sleep 60' &
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh kill-test 'sleep 60' &
           holder_pid=$!
 
           # Wait for the holder to actually acquire the lock before killing.
@@ -290,7 +295,7 @@ jobs:
           # New acquire should succeed immediately. Time it to make sure
           # we're not silently blocking.
           start=$(date +%s)
-          sh lib/local-mutex.sh kill-test 'echo "acquired after kill"'
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh kill-test 'echo "acquired after kill"'
           end=$(date +%s)
           elapsed=$((end - start))
 
@@ -304,7 +309,7 @@ jobs:
         run: |
           rm -f /tmp/local-mutex-term-test.lock
 
-          sh lib/local-mutex.sh term-test 'sleep 60' &
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh term-test 'sleep 60' &
           holder_pid=$!
           sleep 0.5
 
@@ -314,7 +319,7 @@ jobs:
           wait 2>/dev/null
 
           start=$(date +%s)
-          sh lib/local-mutex.sh term-test 'echo "acquired after term"'
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh term-test 'echo "acquired after term"'
           end=$(date +%s)
           elapsed=$((end - start))
 
@@ -329,9 +334,9 @@ jobs:
           rm -f /tmp/local-mutex-seq-test.lock
 
           # Acquire, release (normal exit), reacquire — should be instant.
-          sh lib/local-mutex.sh seq-test 'true'
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh seq-test 'true'
           start=$(date +%s)
-          sh lib/local-mutex.sh seq-test 'true'
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh seq-test 'true'
           end=$(date +%s)
           elapsed=$((end - start))
 
@@ -408,7 +413,7 @@ jobs:
           # inputs, so this path can only be reached by direct invocation —
           # we test it explicitly because the script has dedicated
           # rejection logic for it.
-          sh lib/local-mutex.sh only-one-arg 2>/tmp/argc-err
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh only-one-arg 2>/tmp/argc-err
 
       - name: Verify wrong arg count was rejected
         run: |
@@ -422,7 +427,7 @@ jobs:
       - name: Special chars in name are sanitized
         run: |
           rm -f /tmp/local-mutex-foo_bar_baz_v1.lock
-          sh lib/local-mutex.sh 'foo/bar:baz@v1' 'true'
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh 'foo/bar:baz@v1' 'true'
 
           # The lockfile should exist under the sanitized name, NOT under
           # any path that interprets '/' as a directory separator.
@@ -439,7 +444,7 @@ jobs:
           # [a-zA-Z0-9._-]) and maps slashes to underscores, so
           # `../../etc/passwd` becomes the flat basename `.._.._etc_passwd`
           # and the lock file lands in /tmp as a single-component name.
-          sh lib/local-mutex.sh '../../etc/passwd' 'true'
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh '../../etc/passwd' 'true'
 
           # Asserting the sanitized lock file exists at the expected flat
           # path is the meaningful check: if sanitization broke, the
@@ -462,7 +467,7 @@ jobs:
           expected_basename="local-mutex-$(printf 'a%.0s' $(seq 1 200)).lock"
           rm -f "/tmp/$expected_basename"
 
-          sh lib/local-mutex.sh "$long_name" 'true'
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh "$long_name" 'true'
 
           # The lockfile should exist with a 200-char name component.
           test -f "/tmp/$expected_basename" \
@@ -470,6 +475,21 @@ jobs:
 
           rm -f "/tmp/$expected_basename"
           echo "Long name truncation: OK"
+
+      - name: Single-dot name produces a valid lock file
+        run: |
+          # A name that's already a single allowed character (here '.') must
+          # survive sanitization unchanged and produce a valid lockfile path.
+          # This guards against a future regression that adds an over-eager
+          # "empty sanitized name" check and silently breaks single-character
+          # inputs. The expected lockfile is `/tmp/local-mutex-..lock`, which
+          # is an unusual-looking but valid filename.
+          rm -f /tmp/local-mutex-..lock
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh '.' 'true'
+          test -f /tmp/local-mutex-..lock \
+            || (echo "Expected single-dot lockfile not found" && exit 1)
+          rm -f /tmp/local-mutex-..lock
+          echo "Single-dot name: OK"
 
       - name: Missing binary fails with clear error
         run: |
@@ -494,7 +514,7 @@ jobs:
           [ -n "$tr_path" ] && ln -s "$tr_path" "$test_dir/tr"
 
           set +e
-          PATH="$test_dir" /bin/sh lib/local-mutex.sh missing-binary 'true' 2>/tmp/err
+          PATH="$test_dir" /bin/sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh missing-binary 'true' 2>/tmp/err
           exit_code=$?
           set -e
           rm -rf "$test_dir"

@@ -110,7 +110,7 @@ No timeout flag (the job-level `timeout-minutes` bounds it). No PID tracking. No
 ### Don't use it when
 
 - **Runners are on different machines.** Local file locks can't coordinate across machines. Use GitHub Actions' built-in [`concurrency:`](https://docs.github.com/en/actions/using-jobs/using-concurrency) instead — it serializes whole jobs across all runners, which is the right granularity when you need cross-machine coordination. (Most published "distributed mutex" composite actions are now archived and explicitly point users to `concurrency:`.)
-- **You need fairness or FIFO ordering.** `lockf` and `flock` don't guarantee acquisition order. Whichever caller the kernel happens to wake up first wins.
+- **You need fairness or FIFO ordering across operating systems.** On Linux (`flock`), acquisition order is not guaranteed — whichever caller the kernel happens to wake up first wins. On macOS/BSD, the `lockf(1)` man page documents that `-k` "will guarantee lock ordering," which this action passes. If your fleet mixes both OSes, don't design around FIFO; if it's all BSD-family, you can rely on it.
 - **You need reentrant locks.** A process acquiring the same lock twice will deadlock.
 - **You need a lock with a timeout shorter than the job.** Use `timeout-minutes` on the calling step instead.
 - **You're trying to serialize work outside the runner machine** (a Cloudflare API call, a database operation, a remote service). The lock is local — it can't see beyond `/tmp`.

@@ -14,12 +14,16 @@ inputs:
       (e.g. 'tool-update', 'dep-cache-rebuild', 'db-migrate').
       Names with characters outside [a-zA-Z0-9._-] are sanitized to
       underscores. Names longer than 200 characters are truncated.
+      Empty or whitespace-only values are rejected. Names that share the
+      first 200 characters after sanitization will collide and share the
+      same lock.
     required: true
   run:
     description: >-
       Shell command to execute while holding the lock. Runs under /bin/sh.
       Multi-line scripts are supported. Use `set -e` if you want abort-on-
-      first-failure semantics — the wrapper does not impose them.
+      first-failure semantics — the wrapper does not impose them. Empty or
+      whitespace-only values are rejected.
     required: true
 
 runs:
