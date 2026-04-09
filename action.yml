@@ -30,5 +30,6 @@ runs:
       env:
         INPUT_NAME: ${{ inputs.name }}
         INPUT_RUN: ${{ inputs.run }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        sh "${{ github.action_path }}/lib/local-mutex.sh" "$INPUT_NAME" "$INPUT_RUN"
+        sh "$ACTION_PATH/lib/local-mutex.sh" "$INPUT_NAME" "$INPUT_RUN"

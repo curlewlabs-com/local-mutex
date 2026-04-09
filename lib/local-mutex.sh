@@ -77,15 +77,20 @@ esac
 
 # Sanitize name to a safe filename component. Anything outside the
 # [a-zA-Z0-9._-] character class becomes an underscore. This blocks path
-# traversal (`../etc/passwd` becomes `___etc_passwd`), shell injection
-# (whitespace, $, `, ;, etc. all collapse to underscores), and weird
-# filesystem characters (slashes, colons, NULs).
+# traversal (`../etc/passwd` becomes `.._etc_passwd` — dots are preserved
+# because they're in the allowed class, but slashes collapse to underscores
+# so the result is a flat basename), shell injection (whitespace, $, `, ;,
+# etc. all collapse to underscores), and weird filesystem characters
+# (slashes, colons, NULs).
 safe_name=$(printf '%s' "$name" | tr -c 'a-zA-Z0-9._-' '_')
 
 # Cap the lock file basename at 200 characters so the full path stays well
 # under any filesystem's NAME_MAX (typically 255). Truncating long names
 # instead of rejecting them keeps the action friendly to consumers that
 # generate long descriptive names from version strings or hash digests.
+# Names that share the first 200 characters after sanitization will collide
+# and share the same lock — callers with long descriptive names should keep
+# the distinguishing portion within the first 200 characters.
 # Keep this length in sync with the documented limit in action.yml and README.md.
 safe_name=$(printf '%.200s' "$safe_name")
 
