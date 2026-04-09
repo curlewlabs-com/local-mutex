@@ -2,8 +2,6 @@ name: 'Local Mutex'
 description: >-
   Wrap a command in a local-filesystem mutex (lockf or flock) to serialize
   it across multiple GitHub Actions runners on the same physical machine.
-  For when N runners share a resource that cannot tolerate concurrent
-  access — a tool installation, a system daemon, a cache directory.
 author: 'curlewlabs-com'
 branding:
   icon: 'lock'
