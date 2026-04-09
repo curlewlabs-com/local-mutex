@@ -9,14 +9,15 @@ branding:
 inputs:
   name:
     description: >-
-      Lock identifier. Used as the basename of the lock file under /tmp.
-      Pick a name that describes the resource being protected
-      (e.g. 'tool-update', 'dep-cache-rebuild', 'db-migrate').
-      Names with characters outside [a-zA-Z0-9._-] are sanitized to
-      underscores. Names longer than 200 characters are truncated.
-      Empty or whitespace-only values are rejected. Names that share the
-      first 200 characters after sanitization will collide and share the
-      same lock.
+      Lock identifier. Used to form the lock file basename under /tmp
+      (as 'local-mutex-<sanitized-name>.lock'). Pick a name that describes
+      the resource being protected (e.g. 'tool-update', 'dep-cache-rebuild',
+      'db-migrate'). Names with characters outside [a-zA-Z0-9._-] are
+      sanitized to underscores. Sanitization is lossy: names that differ
+      only in non-allowed characters will map to the same lock. Names
+      longer than 200 characters are truncated. Empty or whitespace-only
+      values are rejected. Names that share the first 200 characters
+      after sanitization will collide and share the same lock.
     required: true
   run:
     description: >-

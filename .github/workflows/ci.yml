@@ -97,6 +97,32 @@ jobs:
           rm -f /tmp/multiline-marker
           echo "set -e abort: OK"
 
+      # Guards the action.yml promise that the wrapper does not impose
+      # `set -e`. A regression that added `-e` inside `sh -c` (or equivalent)
+      # would silently abort wrapped scripts on the first failed command,
+      # which is a behavior change callers would not expect. The test runs
+      # `false` followed by a marker write and asserts both the step
+      # succeeds AND the marker exists — proving the default shell kept
+      # running past the failing command.
+      - name: Wrapper does not impose set -e by default
+        uses: ./
+        with:
+          name: t-no-set-e
+          run: |
+            rm -f /tmp/no-set-e-marker
+            false
+            echo ok > /tmp/no-set-e-marker
+
+      - name: Verify default-no-set-e marker exists
+        run: |
+          test -f /tmp/no-set-e-marker \
+            || (echo "Expected marker file — wrapper must not impose set -e" && exit 1)
+          content=$(cat /tmp/no-set-e-marker)
+          [ "$content" = "ok" ] \
+            || (echo "Expected marker content 'ok', got: $content" && exit 1)
+          rm -f /tmp/no-set-e-marker
+          echo "Default no-set-e behavior: OK"
+
       - name: stdout and stderr from wrapped command are separated
         run: |
           rm -f /tmp/stdout-capture /tmp/stderr-capture \
@@ -458,6 +484,23 @@ jobs:
           rm -f '/tmp/local-mutex-.._.._etc_passwd.lock'
           echo "Path traversal sanitization: OK"
 
+      # Regression guard for the LC_ALL=C fix on the sanitizer's tr(1)
+      # call. Without LC_ALL=C, BSD tr under a UTF-8 locale (the default
+      # on macos-latest) aborts with exit 1 + "Illegal byte sequence" on
+      # inputs containing invalid UTF-8 bytes, bypassing the ::error::
+      # annotation contract. The fix forces tr into byte-oriented mode
+      # so the non-ASCII byte cleanly maps to '_'. The expected lockfile
+      # is `/tmp/local-mutex-_badname.lock` (leading 0xFF -> '_').
+      - name: Invalid UTF-8 byte in name sanitizes cleanly
+        run: |
+          rm -f /tmp/local-mutex-_badname.lock
+          invalid_name=$(printf '\xFFbadname')
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh "$invalid_name" 'true'
+          test -f /tmp/local-mutex-_badname.lock \
+            || (echo "lockfile missing for sanitized invalid-UTF-8 input" && exit 1)
+          rm -f /tmp/local-mutex-_badname.lock
+          echo "Invalid UTF-8 byte sanitization: OK"
+
       - name: Very long name is truncated
         run: |
           # Build a name with 250 'a's. Should be truncated to 200 chars
@@ -527,6 +570,44 @@ jobs:
 
           rm -f /tmp/err
           echo "Missing binary error: OK"
+
+      # Exercises the `command -v tr` probe added in Round 3. Builds a
+      # fake PATH containing only `lockf`/`flock` symlinks (no `tr`) so
+      # the script's early probe fails with a clear ::error:: annotation
+      # and exit 127 instead of the shell's default "tr: command not
+      # found" with no annotation. This is the opposite of the existing
+      # "Missing binary" test, which symlinks tr into the fake PATH
+      # precisely to exercise the lockf/flock probe without tripping the
+      # tr probe.
+      #
+      # `|| true` on the `command -v` probes is required because step
+      # shells run under `bash -e` by default: a bare `x=$(command -v
+      # nosuchcmd)` aborts the step when the probe fails, before we ever
+      # reach the test assertions. Ubuntu runners don't ship `lockf` and
+      # macOS runners don't ship `flock`, so at least one probe always
+      # fails on each platform.
+      - name: Missing tr(1) fails with clear error
+        run: |
+          test_dir=$(mktemp -d)
+          lockf_path=$(command -v lockf 2>/dev/null || true)
+          flock_path=$(command -v flock 2>/dev/null || true)
+          [ -n "$lockf_path" ] && ln -s "$lockf_path" "$test_dir/lockf"
+          [ -n "$flock_path" ] && ln -s "$flock_path" "$test_dir/flock"
+
+          set +e
+          PATH="$test_dir" /bin/sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh missing-tr 'true' 2>/tmp/err
+          exit_code=$?
+          set -e
+          rm -rf "$test_dir"
+
+          [ "$exit_code" = "127" ] \
+            || (echo "Expected exit 127 for missing tr, got $exit_code" && cat /tmp/err && exit 1)
+
+          grep -q 'tr(1) not found' /tmp/err \
+            || (echo "Expected clear error message about missing tr, got:" && cat /tmp/err && exit 1)
+
+          rm -f /tmp/err
+          echo "Missing tr error: OK"
 
       # ─── Caller environment propagation ──────────────────────────────────
 

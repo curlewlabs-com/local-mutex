@@ -96,19 +96,28 @@ command -v tr >/dev/null 2>&1 || {
 # interpolated into an eval or sh -c string. NUL bytes cannot reach this
 # point because POSIX argv strings terminate at the first NUL under
 # execve(2), so $name is already NUL-free by the time the script runs.
-safe_name=$(printf '%s' "$name" | tr -c 'a-zA-Z0-9._-' '_')
+#
+# LC_ALL=C forces tr into byte-oriented mode. Without it, BSD tr under a
+# UTF-8 locale (the default on macOS and on GitHub's macos-latest runner)
+# treats input as UTF-8 characters and aborts with exit 1 + "Illegal byte
+# sequence" when the input contains an invalid UTF-8 byte — which would
+# bypass the ::error:: annotation contract. With LC_ALL=C, tr treats every
+# byte as its own character on every supported platform, so each non-ASCII
+# byte maps to a single '_' regardless of GNU vs BSD tr or caller locale.
+safe_name=$(printf '%s' "$name" | LC_ALL=C tr -c 'a-zA-Z0-9._-' '_')
 
-# Cap the lock file basename at 200 characters so the full path stays well
-# under any filesystem's NAME_MAX (typically 255). Truncating long names
+# Cap the sanitized name at 200 characters so the resulting lock file
+# basename ("local-mutex-<name>.lock", up to 217 chars) stays well under
+# the NAME_MAX per-component limit (typically 255). Truncating long names
 # instead of rejecting them keeps the action friendly to consumers that
 # generate long descriptive names from version strings or hash digests.
 # Names that share the first 200 characters after sanitization will collide
 # and share the same lock — callers with long descriptive names should keep
 # the distinguishing portion within the first 200 characters.
 # Keep this length in sync with the documented limit in action.yml and README.md.
-# %.200s truncates to 200 BYTES; safe here because the prior sanitizer maps
-# every non-ASCII byte to '_', so the input to truncation is always
-# ASCII-only and bytes == chars.
+# %.200s truncates to 200 BYTES; safe here because the prior LC_ALL=C tr
+# step maps every non-ASCII byte to '_', so the input to truncation is
+# always ASCII-only and bytes == chars.
 safe_name=$(printf '%.200s' "$safe_name")
 
 lockfile="/tmp/local-mutex-${safe_name}.lock"
