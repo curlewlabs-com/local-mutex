@@ -27,14 +27,43 @@ inputs:
       whitespace-only values are rejected.
     required: true
 
+outputs:
+  output-file:
+    description: >-
+      Path to a file containing all GITHUB_OUTPUT writes made by the inner
+      command. Callers that need to propagate outputs across the composite
+      action boundary can read this file in a subsequent step:
+        cat "${{ steps.<id>.outputs.output-file }}" >> "$GITHUB_OUTPUT"
+    value: ${{ steps.run.outputs.output-file }}
+
 runs:
   using: 'composite'
   steps:
     - name: Run under local mutex
+      id: run
       shell: sh
       env:
         INPUT_NAME: ${{ inputs.name }}
         INPUT_RUN: ${{ inputs.run }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
-        sh "$ACTION_PATH/lib/local-mutex.sh" "$INPUT_NAME" "$INPUT_RUN"
+        # Redirect the inner command's GITHUB_OUTPUT writes to a
+        # separate file so they can be propagated by the caller.
+        inner_output="${RUNNER_TEMP:-/tmp}/local-mutex-output-$$"
+        : > "$inner_output"
+        outer_output="$GITHUB_OUTPUT"
+        GITHUB_OUTPUT="$inner_output"
+        export GITHUB_OUTPUT
+
+        rc=0
+        sh "$ACTION_PATH/lib/local-mutex.sh" "$INPUT_NAME" "$INPUT_RUN" || rc=$?
+
+        # Restore GITHUB_OUTPUT and copy inner writes to both the
+        # step's own outputs (for internal use) and the original
+        # output stream.
+        GITHUB_OUTPUT="$outer_output"
+        export GITHUB_OUTPUT
+        cat "$inner_output" >> "$GITHUB_OUTPUT"
+        printf 'output-file=%s\n' "$inner_output" >> "$GITHUB_OUTPUT"
+
+        exit "$rc"
