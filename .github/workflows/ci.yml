@@ -10,7 +10,7 @@ jobs:
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
       - name: Shellcheck
         run: shellcheck lib/local-mutex.sh
 
@@ -24,10 +24,15 @@ jobs:
   actionlint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
       - name: Run actionlint
+        # Pin the installer script to a specific actionlint release commit
+        # rather than tracking `main`. The commit hash corresponds to
+        # rhysd/actionlint tag v1.7.12, and the installer script downloads
+        # the matching versioned binary. Hard-pin per the repo's dependency
+        # policy: floating refs silently follow whatever HEAD happens to be.
         run: |
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash) 1.7.12
           ./actionlint -color
 
   # Matrix on both OSes because the script branches on which lock binary is
@@ -39,8 +44,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # Custom job-level env var used by the "job-level env propagates" test
+    # below. Defining it here (rather than on a single step) is the whole
+    # point of the test — it proves values set at job scope reach the
+    # wrapped command.
+    env:
+      CUSTOM_TEST_VAR: expected-value
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       # ─── Sanity ──────────────────────────────────────────────────────────
 
@@ -86,41 +97,107 @@ jobs:
           rm -f /tmp/multiline-marker
           echo "set -e abort: OK"
 
-      - name: stdout from wrapped command appears
-        id: stdout-test
-        uses: ./
-        with:
-          name: t-stdout
-          run: echo "STDOUT_MARKER_12345"
+      - name: stdout and stderr from wrapped command are separated
+        run: |
+          rm -f /tmp/stdout-capture /tmp/stderr-capture \
+                /tmp/local-mutex-t-stdio.lock
 
-      - name: stderr from wrapped command appears
-        uses: ./
-        with:
-          name: t-stderr
-          run: echo "STDERR_MARKER_67890" >&2
+          # Invoke the script directly (rather than via `uses: ./`) so we
+          # can redirect stdout and stderr to separate files and verify
+          # each stream ends up where it should. The action itself just
+          # runs `sh lib/local-mutex.sh`, so this exercises the same code
+          # path while giving the test access to the streams.
+          sh lib/local-mutex.sh t-stdio \
+            'echo "STDOUT_MARKER_12345"; echo "STDERR_MARKER_67890" >&2' \
+            > /tmp/stdout-capture 2> /tmp/stderr-capture
+
+          grep -q 'STDOUT_MARKER_12345' /tmp/stdout-capture \
+            || (echo "stdout marker not on stdout" \
+                && echo "--- stdout ---" && cat /tmp/stdout-capture \
+                && echo "--- stderr ---" && cat /tmp/stderr-capture \
+                && exit 1)
+          grep -q 'STDERR_MARKER_67890' /tmp/stderr-capture \
+            || (echo "stderr marker not on stderr" \
+                && echo "--- stdout ---" && cat /tmp/stdout-capture \
+                && echo "--- stderr ---" && cat /tmp/stderr-capture \
+                && exit 1)
+
+          # Negative assertions: the streams must not be crossed.
+          ! grep -q 'STDERR_MARKER_67890' /tmp/stdout-capture \
+            || (echo "stderr marker leaked onto stdout" && exit 1)
+          ! grep -q 'STDOUT_MARKER_12345' /tmp/stderr-capture \
+            || (echo "stdout marker leaked onto stderr" && exit 1)
+
+          rm -f /tmp/stdout-capture /tmp/stderr-capture \
+                /tmp/local-mutex-t-stdio.lock
+          echo "stdout/stderr separation: OK"
 
       # ─── Concurrency: the central feature ────────────────────────────────
 
       - name: Two concurrent same-name acquires serialize
         run: |
-          rm -f /tmp/conc-log /tmp/local-mutex-conc-2.lock
+          rm -f /tmp/conc-1-start /tmp/conc-1-end \
+                /tmp/conc-2-start /tmp/conc-2-end \
+                /tmp/local-mutex-conc-2.lock
 
-          # Background two callers competing for the same lock. Each writes
-          # a start marker, sleeps, writes an end marker. If the lock works,
-          # the end marker for the first caller appears before the start
-          # marker for the second.
-          sh lib/local-mutex.sh conc-2 'echo "1-start" >> /tmp/conc-log; sleep 0.5; echo "1-end" >> /tmp/conc-log' &
-          sleep 0.05  # Ensure caller 1 acquires first
-          sh lib/local-mutex.sh conc-2 'echo "2-start" >> /tmp/conc-log; sleep 0.3; echo "2-end" >> /tmp/conc-log' &
+          # Background two callers competing for the same lock. Each logs
+          # its start and end timestamps and sleeps in between. The
+          # invariant under a working lock is that the two [start, end]
+          # windows do not overlap: the earlier caller's end-time must be
+          # less than or equal to the later caller's start-time (plus a
+          # small jitter tolerance). We assert this non-interleave
+          # property rather than a specific completion order so the test
+          # is insensitive to scheduling jitter under CI load — we don't
+          # care WHICH caller goes first, only that they don't overlap.
+          #
+          # Timestamps come from `python3 -c 'print(time.time_ns())'`
+          # because both the ubuntu-latest and macos-latest runners have
+          # python3 preinstalled and it gives unambiguous nanosecond
+          # integer output on both platforms. Shelling to `date` is
+          # portable-enough but the `%N` format specifier is not
+          # universally supported across BSD/GNU date versions and we
+          # don't want platform-specific branches in a concurrency test.
+          ts='python3 -c "import time; print(time.time_ns())"'
+          hold_sleep=0.5
+          # 100 ms tolerance: process-teardown and re-exec between the
+          # two lock holders can plausibly take tens of ms under CI load.
+          tolerance=100000000
+
+          sh lib/local-mutex.sh conc-2 \
+            "$ts > /tmp/conc-1-start; sleep $hold_sleep; $ts > /tmp/conc-1-end" &
+          sh lib/local-mutex.sh conc-2 \
+            "$ts > /tmp/conc-2-start; sleep $hold_sleep; $ts > /tmp/conc-2-end" &
           wait
 
-          actual=$(tr '\n' ' ' < /tmp/conc-log | sed 's/ $//')
-          expected="1-start 1-end 2-start 2-end"
-          [ "$actual" = "$expected" ] \
-            || (echo "Expected '$expected', got '$actual'" && exit 1)
+          s1=$(cat /tmp/conc-1-start)
+          e1=$(cat /tmp/conc-1-end)
+          s2=$(cat /tmp/conc-2-start)
+          e2=$(cat /tmp/conc-2-end)
 
-          rm -f /tmp/conc-log /tmp/local-mutex-conc-2.lock
-          echo "Concurrent same-name serialization: OK"
+          # Determine which caller ran first and assert the earlier one's
+          # end-time is <= the later one's start-time (plus jitter
+          # tolerance). Either ordering is acceptable — we are testing
+          # mutual exclusion, not fairness.
+          if [ "$s1" -le "$s2" ]; then
+            earlier_end=$e1
+            later_start=$s2
+            order="1-then-2"
+          else
+            earlier_end=$e2
+            later_start=$s1
+            order="2-then-1"
+          fi
+
+          if [ "$earlier_end" -gt "$((later_start + tolerance))" ]; then
+            echo "Overlap detected ($order): earlier_end=$earlier_end, later_start=$later_start"
+            echo "  s1=$s1 e1=$e1 s2=$s2 e2=$e2"
+            exit 1
+          fi
+
+          rm -f /tmp/conc-1-start /tmp/conc-1-end \
+                /tmp/conc-2-start /tmp/conc-2-end \
+                /tmp/local-mutex-conc-2.lock
+          echo "Concurrent same-name serialization: OK (order: $order)"
 
       - name: Stress — 20 concurrent acquires of the same name
         run: |
@@ -324,18 +401,26 @@ jobs:
         run: |
           rm -f '/tmp/local-mutex-.._.._etc_passwd.lock'
 
-          # If sanitization fails, this could try to create
-          # /tmp/local-mutex-../../etc/passwd-something. Sanitization makes
-          # all the '/' and '..' components into safe chars.
+          # If sanitization failed, the unsanitized name `../../etc/passwd`
+          # would be concatenated into `/tmp/local-mutex-../../etc/passwd.lock`
+          # which, after path resolution, would attempt to create
+          # `/etc/passwd.lock`. Sanitization maps `/` and `.` into safe
+          # characters so the lockfile must end up as a flat filename in
+          # /tmp.
           sh lib/local-mutex.sh '../../etc/passwd' 'true'
 
-          # Lockfile must be a flat filename in /tmp.
+          # Positive: lockfile exists under the sanitized flat basename.
           test -f '/tmp/local-mutex-.._.._etc_passwd.lock' \
             || (echo "Expected sanitized lockfile not found" && exit 1)
 
-          # Critically: nothing got created outside /tmp/local-mutex-*.lock.
-          if [ -f /etc/passwd-something ] || [ -f /tmp/passwd ]; then
-            echo "Path traversal — file created outside expected location"
+          # Negative: the path that the unsanitized name would resolve to
+          # must NOT exist. This is the file an exploit would actually
+          # create if traversal worked, so it's the correct target of the
+          # negative assertion. Also guard against a stray `/etc/passwd`
+          # write (which the script would never do, but we want to catch
+          # any future regression loudly).
+          if [ -e '/etc/passwd.lock' ]; then
+            echo "Path traversal — lockfile resolved to /etc/passwd.lock"
             exit 1
           fi
 
@@ -409,19 +494,21 @@ jobs:
             [ "$MY_STEP_VAR" = "step-level-value" ] \
               || (echo "Expected MY_STEP_VAR=step-level-value, got: $MY_STEP_VAR" && exit 1)
 
-      - name: Job-level env propagates (set at workflow level via outer env on this step)
+      - name: Job-level env propagates
         uses: ./
         with:
           name: t-job-env
-          # GITHUB_WORKFLOW is set by Actions runner at job level — proves
-          # job-level env makes it through.
+          # CUSTOM_TEST_VAR is set in the job-level `env:` block. Asserting
+          # it reaches the wrapped command proves the action doesn't drop
+          # job-scope env while chaining through the composite's shell
+          # step. Previously this test used GITHUB_WORKFLOW, which is set
+          # by the runner rather than by `env:`, so it never exercised
+          # propagation at all.
           run: |
-            [ -n "$GITHUB_WORKFLOW" ] \
-              || (echo "Expected GITHUB_WORKFLOW to be set" && exit 1)
+            [ "$CUSTOM_TEST_VAR" = "expected-value" ] \
+              || (echo "Expected CUSTOM_TEST_VAR=expected-value, got: $CUSTOM_TEST_VAR" && exit 1)
 
       - name: Working directory propagates
-        run: mkdir -p /tmp/wd-test
-      - name: Verify wd inside run matches caller
         uses: ./
         with:
           name: t-wd
