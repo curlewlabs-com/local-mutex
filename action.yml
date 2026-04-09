@@ -1,7 +1,6 @@
 name: 'Local Mutex'
 description: >-
-  Wrap a command in a local-filesystem mutex (lockf or flock) to serialize
-  it across multiple GitHub Actions runners on the same physical machine.
+  Wrap a command in a local-filesystem mutex (lockf or flock) to serialize.
 author: 'curlewlabs-com'
 branding:
   icon: 'lock'
