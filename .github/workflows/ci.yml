@@ -635,6 +635,44 @@ jobs:
             [ "$CUSTOM_TEST_VAR" = "expected-value" ] \
               || (echo "Expected CUSTOM_TEST_VAR=expected-value, got: $CUSTOM_TEST_VAR" && exit 1)
 
+      # Test the output-file passthrough: inner command writes to
+      # GITHUB_OUTPUT, caller reads the file to propagate them.
+      - name: Inner command writes outputs under mutex
+        id: output-test
+        uses: ./
+        with:
+          name: t-output-passthrough
+          run: |
+            printf 'test-key=hello-world\n' >> "$GITHUB_OUTPUT"
+            printf 'another-key=42\n' >> "$GITHUB_OUTPUT"
+
+      - name: Verify output-file is set and contains inner writes
+        run: |
+          output_file="${{ steps.output-test.outputs.output-file }}"
+          [ -n "$output_file" ] \
+            || (echo "Expected output-file to be set" && exit 1)
+          [ -f "$output_file" ] \
+            || (echo "Expected output-file to exist at: $output_file" && exit 1)
+          grep "test-key=hello-world" "$output_file" \
+            || (echo "Expected test-key=hello-world in output-file" && exit 1)
+          grep "another-key=42" "$output_file" \
+            || (echo "Expected another-key=42 in output-file" && exit 1)
+          echo "Output-file contents: OK"
+
+      - name: Propagate inner outputs via output-file
+        id: propagated
+        shell: sh
+        run: |
+          cat "${{ steps.output-test.outputs.output-file }}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify propagated outputs are accessible as step outputs
+        run: |
+          [ "${{ steps.propagated.outputs.test-key }}" = "hello-world" ] \
+            || (echo "Expected propagated test-key=hello-world, got: ${{ steps.propagated.outputs.test-key }}" && exit 1)
+          [ "${{ steps.propagated.outputs.another-key }}" = "42" ] \
+            || (echo "Expected propagated another-key=42, got: ${{ steps.propagated.outputs.another-key }}" && exit 1)
+          echo "Output propagation round-trip: OK"
+
       - name: Working directory propagates
         uses: ./
         with:

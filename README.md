@@ -72,6 +72,35 @@ Two runners running the same build in parallel would otherwise race on writing t
 | `name` | yes | Lock identifier. Used to form the lock file basename under `/tmp` (as `local-mutex-<sanitized-name>.lock`). Pick a name that describes the resource being protected. Characters outside `[a-zA-Z0-9._-]` are sanitized to underscores. Sanitization is lossy: names that differ only in non-allowed characters will map to the same lock (`foo$bar`, `foo@bar`, and `foo bar` all become `foo_bar`). Names longer than 200 characters are truncated. Names that share the first 200 characters after sanitization will collide and share the same lock. Empty or whitespace-only values are rejected. |
 | `run` | yes | Shell command to execute while holding the lock. Runs under `/bin/sh`. Multi-line scripts work. Empty or whitespace-only `run` is rejected. |
 
+## Outputs
+
+| Name | Description |
+|---|---|
+| `output-file` | Path to a file containing all `$GITHUB_OUTPUT` writes made by the inner command. Because composite actions don't propagate outputs from nested steps automatically, callers that need the inner command's outputs must read this file in a subsequent step. |
+
+### Propagating inner outputs
+
+If your inner command writes to `$GITHUB_OUTPUT` and you need those values in later steps, add a propagation step:
+
+```yaml
+- name: Build under lock
+  id: locked-build
+  uses: curlewlabs-com/local-mutex@v1
+  with:
+    name: shared-build
+    run: |
+      ./build.sh
+      printf 'build-hash=%s\n' "$(cat build-hash.txt)" >> "$GITHUB_OUTPUT"
+
+- name: Propagate build outputs
+  id: build
+  shell: sh
+  run: cat "${{ steps.locked-build.outputs.output-file }}" >> "$GITHUB_OUTPUT"
+
+- name: Use build hash
+  run: echo "Built ${{ steps.build.outputs.build-hash }}"
+```
+
 ## How it works
 
 The script sanitizes the `name` input into a safe filename component, builds a lockfile path under `/tmp`, then probes for and execs the chosen lock primitive. The actual core (after the validation and sanitization steps) is:
