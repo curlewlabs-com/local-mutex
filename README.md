@@ -69,7 +69,7 @@ Two runners running the same build in parallel would otherwise race on writing t
 
 | Name | Required | Description |
 |---|---|---|
-| `name` | yes | Lock identifier. Used as the basename of the lock file under `/tmp`. Pick a name that describes the resource being protected. Characters outside `[a-zA-Z0-9._-]` are sanitized to underscores. Names longer than 200 characters are truncated. |
+| `name` | yes | Lock identifier. Used as the basename of the lock file under `/tmp`. Pick a name that describes the resource being protected. Characters outside `[a-zA-Z0-9._-]` are sanitized to underscores. Names longer than 200 characters are truncated. Names that share the first 200 characters after sanitization will collide and share the same lock. |
 | `run` | yes | Shell command to execute while holding the lock. Runs under `/bin/sh`. Multi-line scripts work. Empty or whitespace-only `run` is rejected. |
 
 ## How it works
@@ -84,7 +84,8 @@ if command -v lockf >/dev/null 2>&1; then
 elif command -v flock >/dev/null 2>&1; then
     exec flock -o -x "$lockfile" sh -c "$cmd"
 else
-    fail "neither lockf(1) nor flock(1) found"
+    printf '::error::local-mutex: neither lockf(1) nor flock(1) found on PATH. Install util-linux (Linux) or use a system that ships lockf (macOS, *BSD).\n' >&2
+    exit 127
 fi
 ```
 

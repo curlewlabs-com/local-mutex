@@ -69,11 +69,11 @@ jobs:
           name: t-fail
           run: exit 42
 
-      - name: Verify failed command propagated
+      - name: Failed command fails the step
         run: |
           [ "${{ steps.failed-cmd.outcome }}" = "failure" ] \
             || (echo "Expected failure outcome, got: ${{ steps.failed-cmd.outcome }}" && exit 1)
-          echo "Exit code propagation: OK"
+          echo "Failed command fails the step: OK"
 
       - name: Multi-line run with set -e aborts on first failure
         id: multiline-set-e
@@ -385,6 +385,40 @@ jobs:
             || (echo "Expected failure on empty run" && exit 1)
           echo "Empty run rejection: OK"
 
+      - name: Whitespace-only run fails clean
+        id: ws-run
+        continue-on-error: true
+        uses: ./
+        with:
+          name: t-ws-run
+          run: '   '
+
+      - name: Verify whitespace run was rejected
+        run: |
+          [ "${{ steps.ws-run.outcome }}" = "failure" ] \
+            || (echo "Expected failure on whitespace run" && exit 1)
+          echo "Whitespace run rejection: OK"
+
+      - name: Wrong arg count fails clean
+        id: bad-argc
+        continue-on-error: true
+        run: |
+          # Invoke the script directly with one argument to exercise the
+          # `$# -ne 2` branch. The composite action always passes both
+          # inputs, so this path can only be reached by direct invocation —
+          # we test it explicitly because the script has dedicated
+          # rejection logic for it.
+          sh lib/local-mutex.sh only-one-arg 2>/tmp/argc-err
+
+      - name: Verify wrong arg count was rejected
+        run: |
+          [ "${{ steps.bad-argc.outcome }}" = "failure" ] \
+            || (echo "Expected failure on one-arg invocation, got: ${{ steps.bad-argc.outcome }}" && cat /tmp/argc-err && exit 1)
+          grep -q 'expected exactly 2 arguments' /tmp/argc-err \
+            || (echo "Expected arg-count error message, got:" && cat /tmp/argc-err && exit 1)
+          rm -f /tmp/argc-err
+          echo "Arg count rejection: OK"
+
       - name: Special chars in name are sanitized
         run: |
           rm -f /tmp/local-mutex-foo_bar_baz_v1.lock
@@ -401,28 +435,20 @@ jobs:
         run: |
           rm -f '/tmp/local-mutex-.._.._etc_passwd.lock'
 
-          # If sanitization failed, the unsanitized name `../../etc/passwd`
-          # would be concatenated into `/tmp/local-mutex-../../etc/passwd.lock`
-          # which, after path resolution, would attempt to create
-          # `/etc/passwd.lock`. Sanitization maps `/` and `.` into safe
-          # characters so the lockfile must end up as a flat filename in
-          # /tmp.
+          # The sanitizer keeps dots (they're in the allowed class
+          # [a-zA-Z0-9._-]) and maps slashes to underscores, so
+          # `../../etc/passwd` becomes the flat basename `.._.._etc_passwd`
+          # and the lock file lands in /tmp as a single-component name.
           sh lib/local-mutex.sh '../../etc/passwd' 'true'
 
-          # Positive: lockfile exists under the sanitized flat basename.
+          # Asserting the sanitized lock file exists at the expected flat
+          # path is the meaningful check: if sanitization broke, the
+          # unsanitized path (`/tmp/local-mutex-../../etc/passwd.lock`) would
+          # fail with ENOENT inside open(O_CREAT) because the intermediate
+          # `/tmp/local-mutex-..` directory doesn't exist, so the script
+          # would exit non-zero and this sanitized file would not appear.
           test -f '/tmp/local-mutex-.._.._etc_passwd.lock' \
             || (echo "Expected sanitized lockfile not found" && exit 1)
-
-          # Negative: the path that the unsanitized name would resolve to
-          # must NOT exist. This is the file an exploit would actually
-          # create if traversal worked, so it's the correct target of the
-          # negative assertion. Also guard against a stray `/etc/passwd`
-          # write (which the script would never do, but we want to catch
-          # any future regression loudly).
-          if [ -e '/etc/passwd.lock' ]; then
-            echo "Path traversal — lockfile resolved to /etc/passwd.lock"
-            exit 1
-          fi
 
           rm -f '/tmp/local-mutex-.._.._etc_passwd.lock'
           echo "Path traversal sanitization: OK"
