@@ -75,13 +75,27 @@ case "$cmd" in
         ;;
 esac
 
+# Probe for tr(1) up-front so a missing-tr failure produces a clear
+# ::error:: annotation in the GitHub Actions log instead of the shell's
+# default "tr: command not found" with exit 127 and no annotation.
+command -v tr >/dev/null 2>&1 || {
+    printf '::error::local-mutex: tr(1) not found on PATH\n' >&2
+    exit 127
+}
+
 # Sanitize name to a safe filename component. Anything outside the
 # [a-zA-Z0-9._-] character class becomes an underscore. This blocks path
 # traversal (`../etc/passwd` becomes `.._etc_passwd` — dots are preserved
 # because they're in the allowed class, but slashes collapse to underscores
-# so the result is a flat basename), shell injection (whitespace, $, `, ;,
-# etc. all collapse to underscores), and weird filesystem characters
-# (slashes, colons, NULs).
+# so the result is a flat basename) and maps characters that are awkward
+# in a filename (whitespace, shell metacharacters like $, `, ;, colons,
+# etc.) to underscores so the basename is safe to use as a plain filename
+# component. This is filename hygiene, not shell-injection defense: the
+# sanitized result is only used to build $lockfile, which is then passed
+# as a double-quoted argv argument to `exec lockf`/`exec flock`, never
+# interpolated into an eval or sh -c string. NUL bytes cannot reach this
+# point because POSIX argv strings terminate at the first NUL under
+# execve(2), so $name is already NUL-free by the time the script runs.
 safe_name=$(printf '%s' "$name" | tr -c 'a-zA-Z0-9._-' '_')
 
 # Cap the lock file basename at 200 characters so the full path stays well
@@ -92,6 +106,9 @@ safe_name=$(printf '%s' "$name" | tr -c 'a-zA-Z0-9._-' '_')
 # and share the same lock — callers with long descriptive names should keep
 # the distinguishing portion within the first 200 characters.
 # Keep this length in sync with the documented limit in action.yml and README.md.
+# %.200s truncates to 200 BYTES; safe here because the prior sanitizer maps
+# every non-ASCII byte to '_', so the input to truncation is always
+# ASCII-only and bytes == chars.
 safe_name=$(printf '%.200s' "$safe_name")
 
 lockfile="/tmp/local-mutex-${safe_name}.lock"
