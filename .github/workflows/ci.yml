@@ -1,0 +1,434 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Shellcheck
+        run: shellcheck lib/local-mutex.sh
+
+  # actionlint covers two gaps shellcheck alone misses:
+  # 1. action.yml is YAML (shellcheck only reads shell)
+  # 2. Inline `run:` blocks in this very workflow contain hundreds of lines
+  #    of shell that need the same scrutiny as lib/local-mutex.sh.
+  # actionlint understands GitHub Actions syntax AND wraps shellcheck on
+  # every inline run block, so adding it here applies the AGENTS.md
+  # "all scripts must pass shellcheck" rule to the workflow itself.
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+  # Matrix on both OSes because the script branches on which lock binary is
+  # available. Linux GitHub-hosted runners have flock; macOS GitHub-hosted
+  # runners have lockf. Both must pass identical behavior tests.
+  integration-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # ─── Sanity ──────────────────────────────────────────────────────────
+
+      - name: Single invocation succeeds
+        uses: ./
+        with:
+          name: t-single
+          run: echo "single invocation works"
+
+      - name: Failed command propagates exit code
+        id: failed-cmd
+        continue-on-error: true
+        uses: ./
+        with:
+          name: t-fail
+          run: exit 42
+
+      - name: Verify failed command propagated
+        run: |
+          [ "${{ steps.failed-cmd.outcome }}" = "failure" ] \
+            || (echo "Expected failure outcome, got: ${{ steps.failed-cmd.outcome }}" && exit 1)
+          echo "Exit code propagation: OK"
+
+      - name: Multi-line run with set -e aborts on first failure
+        id: multiline-set-e
+        continue-on-error: true
+        uses: ./
+        with:
+          name: t-set-e
+          run: |
+            set -e
+            echo "first" > /tmp/multiline-marker
+            false
+            echo "second" >> /tmp/multiline-marker
+
+      - name: Verify second line did not run
+        run: |
+          [ "${{ steps.multiline-set-e.outcome }}" = "failure" ] \
+            || (echo "Expected failure on set -e abort" && exit 1)
+          content=$(cat /tmp/multiline-marker)
+          [ "$content" = "first" ] \
+            || (echo "Expected only 'first' in marker (set -e abort), got: $content" && exit 1)
+          rm -f /tmp/multiline-marker
+          echo "set -e abort: OK"
+
+      - name: stdout from wrapped command appears
+        id: stdout-test
+        uses: ./
+        with:
+          name: t-stdout
+          run: echo "STDOUT_MARKER_12345"
+
+      - name: stderr from wrapped command appears
+        uses: ./
+        with:
+          name: t-stderr
+          run: echo "STDERR_MARKER_67890" >&2
+
+      # ─── Concurrency: the central feature ────────────────────────────────
+
+      - name: Two concurrent same-name acquires serialize
+        run: |
+          rm -f /tmp/conc-log /tmp/local-mutex-conc-2.lock
+
+          # Background two callers competing for the same lock. Each writes
+          # a start marker, sleeps, writes an end marker. If the lock works,
+          # the end marker for the first caller appears before the start
+          # marker for the second.
+          sh lib/local-mutex.sh conc-2 'echo "1-start" >> /tmp/conc-log; sleep 0.5; echo "1-end" >> /tmp/conc-log' &
+          sleep 0.05  # Ensure caller 1 acquires first
+          sh lib/local-mutex.sh conc-2 'echo "2-start" >> /tmp/conc-log; sleep 0.3; echo "2-end" >> /tmp/conc-log' &
+          wait
+
+          actual=$(tr '\n' ' ' < /tmp/conc-log | sed 's/ $//')
+          expected="1-start 1-end 2-start 2-end"
+          [ "$actual" = "$expected" ] \
+            || (echo "Expected '$expected', got '$actual'" && exit 1)
+
+          rm -f /tmp/conc-log /tmp/local-mutex-conc-2.lock
+          echo "Concurrent same-name serialization: OK"
+
+      - name: Stress — 20 concurrent acquires of the same name
+        run: |
+          rm -f /tmp/stress-log /tmp/local-mutex-stress-20.lock
+
+          # Spawn 20 background acquires in parallel. Each writes start/end
+          # markers; sleep is short so the test stays fast but real enough
+          # that an interleave would be visible.
+          i=1
+          while [ $i -le 20 ]; do
+            sh lib/local-mutex.sh stress-20 "echo \"${i}-s\" >> /tmp/stress-log; sleep 0.05; echo \"${i}-e\" >> /tmp/stress-log" &
+            i=$((i + 1))
+          done
+          wait
+
+          # Each caller wrote exactly one start and one end marker.
+          start_count=$(grep -c -- '-s$' /tmp/stress-log)
+          end_count=$(grep -c -- '-e$' /tmp/stress-log)
+          [ "$start_count" = "20" ] \
+            || (echo "Expected 20 start markers, got $start_count" && cat /tmp/stress-log && exit 1)
+          [ "$end_count" = "20" ] \
+            || (echo "Expected 20 end markers, got $end_count" && cat /tmp/stress-log && exit 1)
+
+          # Critical invariant: every start must be immediately followed by
+          # the matching end before any other start appears. Walk the log
+          # in pairs and assert each pair has matching IDs and is s/e order.
+          line_count=$(wc -l < /tmp/stress-log | tr -d ' ')
+          [ "$line_count" = "40" ] \
+            || (echo "Expected 40 log lines, got $line_count" && exit 1)
+
+          line=1
+          while [ $line -le 40 ]; do
+            start_line=$(sed -n "${line}p" /tmp/stress-log)
+            end_line=$(sed -n "$((line + 1))p" /tmp/stress-log)
+            start_id="${start_line%-s}"
+            end_id="${end_line%-e}"
+            [ "$start_id" = "$end_id" ] \
+              || (echo "Interleave detected at line $line: $start_line / $end_line" && cat /tmp/stress-log && exit 1)
+            case "$start_line" in *-s) ;; *) echo "Expected start at line $line, got $start_line" && exit 1 ;; esac
+            case "$end_line" in *-e) ;; *) echo "Expected end at line $((line + 1)), got $end_line" && exit 1 ;; esac
+            line=$((line + 2))
+          done
+
+          rm -f /tmp/stress-log /tmp/local-mutex-stress-20.lock
+          echo "Stress 20 concurrent: OK"
+
+      - name: Different names don't block each other
+        run: |
+          rm -f /tmp/local-mutex-name-a.lock /tmp/local-mutex-name-b.lock
+
+          # If different names share a lock (bug), this takes ~6s. If they
+          # don't (correct), it takes ~3s. Use sleep 3 instead of sleep 1 so
+          # the parallel-vs-serial gap is wide enough that integer-second
+          # `date +%s` rounding can't mask a regression. Bound is `-le 4`
+          # (parallel run can be 3 or 4 depending on second-boundary timing,
+          # serial run would be 6 or 7 — easily distinguished).
+          start=$(date +%s)
+          sh lib/local-mutex.sh name-a 'sleep 3' &
+          sh lib/local-mutex.sh name-b 'sleep 3' &
+          wait
+          end=$(date +%s)
+          elapsed=$((end - start))
+
+          [ "$elapsed" -le 4 ] \
+            || (echo "Expected ~3s parallel, got ${elapsed}s — likely blocking on shared lock" && exit 1)
+
+          rm -f /tmp/local-mutex-name-a.lock /tmp/local-mutex-name-b.lock
+          echo "Different names parallel: OK (${elapsed}s)"
+
+      - name: Auto-release on SIGKILL
+        run: |
+          rm -f /tmp/local-mutex-kill-test.lock
+
+          # Background a holder that sleeps for a long time
+          sh lib/local-mutex.sh kill-test 'sleep 60' &
+          holder_pid=$!
+
+          # Wait for the holder to actually acquire the lock before killing.
+          # Without this sleep, kill -9 might race the lock acquisition and
+          # we'd be testing "kill before acquire" instead of "kill while
+          # holding," which doesn't exercise the kernel cleanup path.
+          sleep 0.5
+
+          # SIGKILL the holder. The kernel should release the lock as part
+          # of process teardown — flock releases on FD close, lockf on
+          # process exit. Either way, no waiting required.
+          kill -9 "$holder_pid" 2>/dev/null
+          wait 2>/dev/null
+
+          # New acquire should succeed immediately. Time it to make sure
+          # we're not silently blocking.
+          start=$(date +%s)
+          sh lib/local-mutex.sh kill-test 'echo "acquired after kill"'
+          end=$(date +%s)
+          elapsed=$((end - start))
+
+          [ "$elapsed" -le 1 ] \
+            || (echo "Auto-release after SIGKILL took ${elapsed}s — too slow, kernel cleanup may not be working" && exit 1)
+
+          rm -f /tmp/local-mutex-kill-test.lock
+          echo "SIGKILL auto-release: OK"
+
+      - name: Auto-release on SIGTERM
+        run: |
+          rm -f /tmp/local-mutex-term-test.lock
+
+          sh lib/local-mutex.sh term-test 'sleep 60' &
+          holder_pid=$!
+          sleep 0.5
+
+          # SIGTERM is the polite kill — the shell may run traps, then exit.
+          # The kernel still releases the lock on process exit either way.
+          kill -TERM "$holder_pid" 2>/dev/null
+          wait 2>/dev/null
+
+          start=$(date +%s)
+          sh lib/local-mutex.sh term-test 'echo "acquired after term"'
+          end=$(date +%s)
+          elapsed=$((end - start))
+
+          [ "$elapsed" -le 1 ] \
+            || (echo "Auto-release after SIGTERM took ${elapsed}s — too slow" && exit 1)
+
+          rm -f /tmp/local-mutex-term-test.lock
+          echo "SIGTERM auto-release: OK"
+
+      - name: Sequential normal-exit reacquire
+        run: |
+          rm -f /tmp/local-mutex-seq-test.lock
+
+          # Acquire, release (normal exit), reacquire — should be instant.
+          sh lib/local-mutex.sh seq-test 'true'
+          start=$(date +%s)
+          sh lib/local-mutex.sh seq-test 'true'
+          end=$(date +%s)
+          elapsed=$((end - start))
+
+          [ "$elapsed" -le 1 ] \
+            || (echo "Sequential reacquire took ${elapsed}s — lock may not be releasing" && exit 1)
+
+          rm -f /tmp/local-mutex-seq-test.lock
+          echo "Sequential normal-exit reacquire: OK"
+
+      # ─── Robustness ──────────────────────────────────────────────────────
+
+      - name: Empty name input fails clean
+        id: empty-name
+        continue-on-error: true
+        uses: ./
+        with:
+          name: ''
+          run: echo "should not run"
+
+      - name: Verify empty name was rejected
+        run: |
+          [ "${{ steps.empty-name.outcome }}" = "failure" ] \
+            || (echo "Expected failure on empty name, got: ${{ steps.empty-name.outcome }}" && exit 1)
+          echo "Empty name rejection: OK"
+
+      - name: Whitespace-only name fails clean
+        id: ws-name
+        continue-on-error: true
+        uses: ./
+        with:
+          name: '   '
+          run: echo "should not run"
+
+      - name: Verify whitespace name was rejected
+        run: |
+          [ "${{ steps.ws-name.outcome }}" = "failure" ] \
+            || (echo "Expected failure on whitespace name" && exit 1)
+          echo "Whitespace name rejection: OK"
+
+      - name: Empty run input fails clean
+        id: empty-run
+        continue-on-error: true
+        uses: ./
+        with:
+          name: t-empty-run
+          run: ''
+
+      - name: Verify empty run was rejected
+        run: |
+          [ "${{ steps.empty-run.outcome }}" = "failure" ] \
+            || (echo "Expected failure on empty run" && exit 1)
+          echo "Empty run rejection: OK"
+
+      - name: Special chars in name are sanitized
+        run: |
+          rm -f /tmp/local-mutex-foo_bar_baz_v1.lock
+          sh lib/local-mutex.sh 'foo/bar:baz@v1' 'true'
+
+          # The lockfile should exist under the sanitized name, NOT under
+          # any path that interprets '/' as a directory separator.
+          test -f '/tmp/local-mutex-foo_bar_baz_v1.lock' \
+            || (echo "Expected sanitized lockfile not found" && exit 1)
+          rm -f /tmp/local-mutex-foo_bar_baz_v1.lock
+          echo "Name sanitization: OK"
+
+      - name: Path traversal in name is sanitized
+        run: |
+          rm -f '/tmp/local-mutex-.._.._etc_passwd.lock'
+
+          # If sanitization fails, this could try to create
+          # /tmp/local-mutex-../../etc/passwd-something. Sanitization makes
+          # all the '/' and '..' components into safe chars.
+          sh lib/local-mutex.sh '../../etc/passwd' 'true'
+
+          # Lockfile must be a flat filename in /tmp.
+          test -f '/tmp/local-mutex-.._.._etc_passwd.lock' \
+            || (echo "Expected sanitized lockfile not found" && exit 1)
+
+          # Critically: nothing got created outside /tmp/local-mutex-*.lock.
+          if [ -f /etc/passwd-something ] || [ -f /tmp/passwd ]; then
+            echo "Path traversal — file created outside expected location"
+            exit 1
+          fi
+
+          rm -f '/tmp/local-mutex-.._.._etc_passwd.lock'
+          echo "Path traversal sanitization: OK"
+
+      - name: Very long name is truncated
+        run: |
+          # Build a name with 250 'a's. Should be truncated to 200 chars
+          # in the lockfile basename so the full path stays well under
+          # NAME_MAX (255).
+          long_name=$(printf 'a%.0s' $(seq 1 250))
+          expected_basename="local-mutex-$(printf 'a%.0s' $(seq 1 200)).lock"
+          rm -f "/tmp/$expected_basename"
+
+          sh lib/local-mutex.sh "$long_name" 'true'
+
+          # The lockfile should exist with a 200-char name component.
+          test -f "/tmp/$expected_basename" \
+            || (echo "Expected truncated lockfile not found at /tmp/$expected_basename" && exit 1)
+
+          rm -f "/tmp/$expected_basename"
+          echo "Long name truncation: OK"
+
+      - name: Missing binary fails with clear error
+        run: |
+          # Build a fake PATH directory containing only `tr` (used by the
+          # script's sanitization step). Explicitly does NOT contain lockf
+          # or flock. The script should reach the lock probe, fail cleanly,
+          # and exit 127.
+          #
+          # Use /bin/sh explicitly to match the action.yml's `shell: sh`,
+          # so the test exercises the same interpreter the action will use
+          # in production. Don't symlink sh into the fake PATH — /bin/sh
+          # is the canonical interpreter location and using it directly
+          # makes the test intent unambiguous.
+          #
+          # We can't just `PATH= /bin/sh ...` because that also strips tr,
+          # which the script needs for the name sanitization step. The
+          # fake-PATH approach exercises specifically the "lock binary
+          # missing" case while leaving the script's other dependencies
+          # functional.
+          test_dir=$(mktemp -d)
+          tr_path=$(command -v tr 2>/dev/null)
+          [ -n "$tr_path" ] && ln -s "$tr_path" "$test_dir/tr"
+
+          set +e
+          PATH="$test_dir" /bin/sh lib/local-mutex.sh missing-binary 'true' 2>/tmp/err
+          exit_code=$?
+          set -e
+          rm -rf "$test_dir"
+
+          [ "$exit_code" = "127" ] \
+            || (echo "Expected exit 127 for missing binary, got $exit_code" && cat /tmp/err && exit 1)
+
+          grep -q 'neither lockf' /tmp/err \
+            || (echo "Expected clear error message about missing binary, got:" && cat /tmp/err && exit 1)
+
+          rm -f /tmp/err
+          echo "Missing binary error: OK"
+
+      # ─── Caller environment propagation ──────────────────────────────────
+
+      - name: Step-level env is visible inside run
+        uses: ./
+        env:
+          MY_STEP_VAR: step-level-value
+        with:
+          name: t-step-env
+          run: |
+            [ "$MY_STEP_VAR" = "step-level-value" ] \
+              || (echo "Expected MY_STEP_VAR=step-level-value, got: $MY_STEP_VAR" && exit 1)
+
+      - name: Job-level env propagates (set at workflow level via outer env on this step)
+        uses: ./
+        with:
+          name: t-job-env
+          # GITHUB_WORKFLOW is set by Actions runner at job level — proves
+          # job-level env makes it through.
+          run: |
+            [ -n "$GITHUB_WORKFLOW" ] \
+              || (echo "Expected GITHUB_WORKFLOW to be set" && exit 1)
+
+      - name: Working directory propagates
+        run: mkdir -p /tmp/wd-test
+      - name: Verify wd inside run matches caller
+        uses: ./
+        with:
+          name: t-wd
+          # `pwd` inside the run should be the GITHUB_WORKSPACE (the repo
+          # checkout root), not /tmp or the action's location.
+          run: |
+            actual=$(pwd)
+            expected="$GITHUB_WORKSPACE"
+            [ "$actual" = "$expected" ] \
+              || (echo "Expected pwd=$expected, got $actual" && exit 1)

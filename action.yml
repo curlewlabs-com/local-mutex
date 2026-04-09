@@ -1,0 +1,37 @@
+name: 'Local Mutex'
+description: >-
+  Wrap a command in a local-filesystem mutex (lockf or flock) to serialize
+  it across multiple GitHub Actions runners on the same physical machine.
+  For when N runners share a resource that cannot tolerate concurrent
+  access — a tool installation, a system daemon, a cache directory.
+author: 'curlewlabs-com'
+branding:
+  icon: 'lock'
+  color: 'blue'
+
+inputs:
+  name:
+    description: >-
+      Lock identifier. Used as the basename of the lock file under /tmp.
+      Pick a name that describes the resource being protected
+      (e.g. 'tool-update', 'dep-cache-rebuild', 'db-migrate').
+      Names with characters outside [a-zA-Z0-9._-] are sanitized to
+      underscores. Names longer than 200 characters are truncated.
+    required: true
+  run:
+    description: >-
+      Shell command to execute while holding the lock. Runs under /bin/sh.
+      Multi-line scripts are supported. Use `set -e` if you want abort-on-
+      first-failure semantics — the wrapper does not impose them.
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run under local mutex
+      shell: sh
+      env:
+        INPUT_NAME: ${{ inputs.name }}
+        INPUT_RUN: ${{ inputs.run }}
+      run: |
+        sh "${{ github.action_path }}/lib/local-mutex.sh" "$INPUT_NAME" "$INPUT_RUN"
