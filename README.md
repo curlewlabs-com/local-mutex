@@ -167,6 +167,26 @@ No timeout flag (the job-level `timeout-minutes` bounds it). No PID tracking. No
 
 GitHub-hosted runners (`ubuntu-latest`, `macos-latest`) also work — they have the binaries — but the use case doesn't apply because GitHub-hosted runners are ephemeral and don't share state across jobs.
 
+This repository's CI still runs on GitHub-hosted Linux and macOS runners because public-repo self-hosted testing is operationally awkward and security-sensitive. That CI meaningfully verifies the action's contract at the lock-primitive level (`lockf` on macOS, `flock` on Linux), but it does not fully reproduce the production topology of multiple self-hosted runners sharing one physical machine and one `/tmp`. If you need to validate that exact deployment shape, run the manual same-machine check below on the host where your runners live.
+
+## Manual validation on a shared runner host
+
+To validate the real deployment model end-to-end, open two terminals on the same machine under the same OS user and run the script directly from this checkout in both terminals with the same lock name.
+
+**Terminal 1**
+
+```sh
+sh lib/local-mutex.sh manual-check 'date; echo "terminal 1 acquired"; sleep 10; echo "terminal 1 releasing"; date'
+```
+
+**Terminal 2** (start this while Terminal 1 is still sleeping)
+
+```sh
+sh lib/local-mutex.sh manual-check 'date; echo "terminal 2 acquired"; echo "terminal 2 releasing"; date'
+```
+
+Expected result: Terminal 2 blocks until Terminal 1 exits, then acquires the same lock immediately after. If you want to mimic the action more closely, repeat the same experiment from two separate self-hosted runner jobs on the same host using `uses: curlewlabs-com/local-mutex@v1` with the same `name:`.
+
 ## Releasing
 
 Users pin to `@v1` (floating major tag).
