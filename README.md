@@ -1,8 +1,8 @@
 # local-mutex
 
-Wrap a command in a local-filesystem mutex on self-hosted GitHub Actions runners.
+Multiple self-hosted GitHub Actions runners on the same machine share `~/.cocoapods`, `~/.local/bin`, `/tmp`, and every other singleton OS resource. When two runners hit `pod install --repo-update`, `claude update`, `brew upgrade`, or any shared-state operation at the same time, they corrupt each other silently.
 
-A composite action for the case where multiple GitHub Actions runners share a single physical machine and need to serialize access to a shared resource — a tool installation, a system daemon, a cache directory, anything that can't tolerate concurrent access. Uses [`lockf(1)`](https://man.freebsd.org/cgi/man.cgi?lockf(1)) on macOS/BSD or [`flock(1)`](https://man7.org/linux/man-pages/man1/flock.1.html) on Linux, whichever is on `PATH`. The lock is held by the action's own process; when that process exits — normally, on `SIGKILL`, OOM kill, or machine reboot — the kernel releases the lock immediately. There is no stale-lock recovery code in this action because there is no stale-lock problem to recover from.
+`local-mutex` wraps any shell command in a kernel-level file lock ([`lockf(1)`](https://man.freebsd.org/cgi/man.cgi?lockf(1)) on macOS/BSD, [`flock(1)`](https://man7.org/linux/man-pages/man1/flock.1.html) on Linux, whichever is on `PATH`). The lock is acquired before your command runs, held for the duration, and released automatically when it exits — including on `SIGKILL`, OOM kill, or machine reboot. No external services, no stale-lock recovery, no PID tracking.
 
 ## Why
 
@@ -48,6 +48,20 @@ jobs:
 ```
 
 If multiple runners hit this job at the same time, the update step on each one waits for the previous one's update to finish, then runs (likely a no-op since the binary is already current). The subsequent step then runs in parallel across all of them with no contention.
+
+### Example: serializing CocoaPods across runners
+
+```yaml
+- name: Install CocoaPods dependencies
+  uses: curlewlabs-com/local-mutex@v1
+  with:
+    name: cocoapods-spec
+    run: |
+      cd app/ios
+      pod install || pod install --repo-update
+```
+
+Multiple macOS runners sharing `~/.cocoapods` will race on spec-cache updates. Without serialization, `--repo-update` on one runner can partially overwrite the cache another runner is reading, producing cryptic pod resolution failures.
 
 ### Example: serializing a shared cache directory write
 

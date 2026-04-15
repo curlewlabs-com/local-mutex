@@ -1,6 +1,8 @@
 name: 'Local Mutex'
 description: >-
-  Wrap a command in a local-filesystem mutex (lockf or flock) to serialize local operations.
+  Serialize shared-resource access (CocoaPods, tool updates, cache writes)
+  across multiple self-hosted GitHub Actions runners on the same machine.
+  Kernel-level lockf/flock — no external services, no stale locks.
 author: 'curlewlabs-com'
 branding:
   icon: 'lock'
