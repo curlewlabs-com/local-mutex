@@ -1,6 +1,6 @@
 name: 'Local Mutex'
 description: >-
-  Wrap a command in a local-filesystem mutex (lockf or flock) to serialize local operations.
+  Serialize shared resources across self-hosted runners on the same machine. Kernel-level lockf/flock.
 author: 'curlewlabs-com'
 branding:
   icon: 'lock'
