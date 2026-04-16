@@ -33,13 +33,20 @@
 
 set -eu
 
-if [ $# -ne 2 ]; then
-    printf '::error::local-mutex: expected exactly 2 arguments (NAME COMMAND), got %d\n' "$#" >&2
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+    printf '::error::local-mutex: expected 2 or 3 arguments (NAME COMMAND [LOCK_DIR]), got %d\n' "$#" >&2
     exit 2
 fi
 
 name="$1"
 cmd="$2"
+# Third arg is the lock directory. Empty or unset means "use the default
+# /tmp" — this matches the action.yml surface where `lock-dir` is an
+# optional input with an empty-string default. Callers on self-hosted
+# runners with a non-shared /tmp (containerized runners, chrooted
+# sandboxes, or anywhere /tmp doesn't see across sibling runners) can
+# point this at a real shared filesystem path.
+lock_dir="${3:-/tmp}"
 
 # Reject empty/whitespace-only inputs early. Both produce useless lock files
 # and silent no-ops downstream, which is the worst possible failure mode for
@@ -120,7 +127,33 @@ safe_name=$(printf '%s' "$name" | LC_ALL=C tr -c 'a-zA-Z0-9._-' '_')
 # always ASCII-only and bytes == chars.
 safe_name=$(printf '%.200s' "$safe_name")
 
-lockfile="/tmp/local-mutex-${safe_name}.lock"
+# Validate lock-dir before building the lockfile path. The default /tmp
+# is also validated so the error shape is consistent whether the caller
+# set lock-dir explicitly or relied on the default. An absolute-path
+# check keeps the lockfile location deterministic regardless of where
+# the action runs from; the directory and writability checks catch the
+# common container-runner misconfiguration of "I set lock-dir to a path
+# that doesn't exist in my container" with a clear error instead of a
+# cryptic open(2) EACCES downstream.
+case "$lock_dir" in
+    /*) ;;
+    *)
+        printf '::error::local-mutex: lock-dir must be an absolute path, got: %s\n' "$lock_dir" >&2
+        exit 2
+        ;;
+esac
+
+if [ ! -d "$lock_dir" ]; then
+    printf '::error::local-mutex: lock-dir does not exist or is not a directory: %s\n' "$lock_dir" >&2
+    exit 2
+fi
+
+if [ ! -w "$lock_dir" ]; then
+    printf '::error::local-mutex: lock-dir is not writable: %s\n' "$lock_dir" >&2
+    exit 2
+fi
+
+lockfile="${lock_dir}/local-mutex-${safe_name}.lock"
 
 # Emit a diagnostic notice before and after the lock acquire so callers
 # debugging a hung step can see what the step is blocked on and when it

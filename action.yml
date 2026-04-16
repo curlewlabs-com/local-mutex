@@ -26,6 +26,19 @@ inputs:
       first-failure semantics — the wrapper does not impose them. Empty or
       whitespace-only values are rejected.
     required: true
+  lock-dir:
+    description: >-
+      Absolute path to the directory where the lock file is created.
+      Defaults to /tmp. Override this only when /tmp is not shared
+      across the runners on the same machine — for example, on
+      containerized self-hosted runners where /tmp is container-local.
+      The directory must exist and be writable by the runner user. The
+      lock file name inside this directory is always
+      'local-mutex-<sanitized-name>.lock' so callers setting the same
+      name from two runners continue to serialize as long as they share
+      lock-dir.
+    required: false
+    default: ''
 
 outputs:
   output-file:
@@ -45,6 +58,7 @@ runs:
       env:
         INPUT_NAME: ${{ inputs.name }}
         INPUT_RUN: ${{ inputs.run }}
+        INPUT_LOCK_DIR: ${{ inputs.lock-dir }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         # Redirect the inner command's GITHUB_OUTPUT writes to a
@@ -55,8 +69,12 @@ runs:
         GITHUB_OUTPUT="$inner_output"
         export GITHUB_OUTPUT
 
+        # Always pass lock-dir as the 3rd positional arg. The script
+        # treats empty string the same as "unset" — both fall back to
+        # the /tmp default — so this single shape works for callers who
+        # set lock-dir and callers who don't.
         rc=0
-        sh "$ACTION_PATH/lib/local-mutex.sh" "$INPUT_NAME" "$INPUT_RUN" || rc=$?
+        sh "$ACTION_PATH/lib/local-mutex.sh" "$INPUT_NAME" "$INPUT_RUN" "$INPUT_LOCK_DIR" || rc=$?
 
         # Restore GITHUB_OUTPUT and copy inner writes to both the
         # step's own outputs (for internal use) and the original
