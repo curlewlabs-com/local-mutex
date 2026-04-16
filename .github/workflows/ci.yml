@@ -56,6 +56,43 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
 
+      # Pre-compute SHA-256 lockfile basenames for every fixed test name
+      # used below. Each subsequent step references $H_<UPPER_NAME> when
+      # constructing lockfile paths, which keeps the individual tests
+      # focused on behavior instead of repeating the `printf | shasum |
+      # cut` boilerplate 20+ times. Names with dynamic content (the
+      # very-long-name test, the invalid-UTF-8-byte test, the
+      # long-prefix collision test) compute their hash inline because
+      # their input doesn't fit cleanly as a static env var value.
+      - name: Compute lockfile hashes for fixed test names
+        run: |
+          h() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              printf '%s' "$1" | sha256sum | cut -d' ' -f1
+            else
+              printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+            fi
+          }
+          {
+            printf 'H_T_STDIO=%s\n'          "$(h t-stdio)"
+            printf 'H_CONC_2=%s\n'           "$(h conc-2)"
+            printf 'H_STRESS_20=%s\n'        "$(h stress-20)"
+            printf 'H_NAME_A=%s\n'           "$(h name-a)"
+            printf 'H_NAME_B=%s\n'           "$(h name-b)"
+            printf 'H_KILL_TEST=%s\n'        "$(h kill-test)"
+            printf 'H_TERM_TEST=%s\n'        "$(h term-test)"
+            printf 'H_SEQ_TEST=%s\n'         "$(h seq-test)"
+            printf 'H_SPECIAL=%s\n'          "$(h 'foo/bar:baz@v1')"
+            printf 'H_TRAVERSAL=%s\n'        "$(h '../../etc/passwd')"
+            printf 'H_DOT=%s\n'              "$(h '.')"
+            printf 'H_T_DIAG=%s\n'           "$(h t-diag)"
+            printf 'H_T_DIAG_FAIL=%s\n'      "$(h t-diag-fail)"
+            printf 'H_T_DIAG_TRAP=%s\n'      "$(h t-diag-trap)"
+            printf 'H_T_CUSTOM_DIR=%s\n'     "$(h t-custom-dir)"
+            printf 'H_T_EMPTY_LD=%s\n'       "$(h t-empty-ld)"
+            printf 'H_T_ACTION_LOCKDIR=%s\n' "$(h t-action-lockdir)"
+          } >> "$GITHUB_ENV"
+
       # ─── Sanity ──────────────────────────────────────────────────────────
 
       - name: Single invocation succeeds
@@ -129,7 +166,7 @@ jobs:
       - name: stdout and stderr from wrapped command are separated
         run: |
           rm -f /tmp/stdout-capture /tmp/stderr-capture \
-                /tmp/local-mutex-t-stdio.lock
+                "/tmp/local-mutex-${H_T_STDIO}.lock"
 
           # Invoke the script directly (rather than via `uses: ./`) so we
           # can redirect stdout and stderr to separate files and verify
@@ -161,7 +198,7 @@ jobs:
             || (echo "stdout marker leaked onto stderr" && exit 1)
 
           rm -f /tmp/stdout-capture /tmp/stderr-capture \
-                /tmp/local-mutex-t-stdio.lock
+                "/tmp/local-mutex-${H_T_STDIO}.lock"
           echo "stdout/stderr separation: OK"
 
       # ─── Concurrency: the central feature ────────────────────────────────
@@ -170,7 +207,7 @@ jobs:
         run: |
           rm -f /tmp/conc-1-start /tmp/conc-1-end \
                 /tmp/conc-2-start /tmp/conc-2-end \
-                /tmp/local-mutex-conc-2.lock
+                "/tmp/local-mutex-${H_CONC_2}.lock"
 
           # Background two callers competing for the same lock. Each logs
           # its start and end timestamps and sleeps in between. The
@@ -228,12 +265,12 @@ jobs:
 
           rm -f /tmp/conc-1-start /tmp/conc-1-end \
                 /tmp/conc-2-start /tmp/conc-2-end \
-                /tmp/local-mutex-conc-2.lock
+                "/tmp/local-mutex-${H_CONC_2}.lock"
           echo "Concurrent same-name serialization: OK (order: $order)"
 
       - name: Stress — 20 concurrent acquires of the same name
         run: |
-          rm -f /tmp/stress-log /tmp/local-mutex-stress-20.lock
+          rm -f /tmp/stress-log "/tmp/local-mutex-${H_STRESS_20}.lock"
 
           # Spawn 20 background acquires in parallel. Each writes start/end
           # markers; sleep is short so the test stays fast but real enough
@@ -273,12 +310,12 @@ jobs:
             line=$((line + 2))
           done
 
-          rm -f /tmp/stress-log /tmp/local-mutex-stress-20.lock
+          rm -f /tmp/stress-log "/tmp/local-mutex-${H_STRESS_20}.lock"
           echo "Stress 20 concurrent: OK"
 
       - name: Different names don't block each other
         run: |
-          rm -f /tmp/local-mutex-name-a.lock /tmp/local-mutex-name-b.lock
+          rm -f "/tmp/local-mutex-${H_NAME_A}.lock" "/tmp/local-mutex-${H_NAME_B}.lock"
 
           # If different names share a lock (bug), this takes ~6s. If they
           # don't (correct), it takes ~3s. Use sleep 3 instead of sleep 1 so
@@ -298,12 +335,12 @@ jobs:
           [ "$elapsed" -le 4 ] \
             || (echo "Expected ~3s parallel, got ${elapsed}s — likely blocking on shared lock" && exit 1)
 
-          rm -f /tmp/local-mutex-name-a.lock /tmp/local-mutex-name-b.lock
+          rm -f "/tmp/local-mutex-${H_NAME_A}.lock" "/tmp/local-mutex-${H_NAME_B}.lock"
           echo "Different names parallel: OK (${elapsed}s)"
 
       - name: Auto-release on SIGKILL
         run: |
-          rm -f /tmp/local-mutex-kill-test.lock
+          rm -f "/tmp/local-mutex-${H_KILL_TEST}.lock"
 
           # Background a holder that sleeps for a long time
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh kill-test 'sleep 60' &
@@ -331,12 +368,12 @@ jobs:
           [ "$elapsed" -le 1 ] \
             || (echo "Auto-release after SIGKILL took ${elapsed}s — too slow, kernel cleanup may not be working" && exit 1)
 
-          rm -f /tmp/local-mutex-kill-test.lock
+          rm -f "/tmp/local-mutex-${H_KILL_TEST}.lock"
           echo "SIGKILL auto-release: OK"
 
       - name: Auto-release on SIGTERM
         run: |
-          rm -f /tmp/local-mutex-term-test.lock
+          rm -f "/tmp/local-mutex-${H_TERM_TEST}.lock"
 
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh term-test 'sleep 60' &
           holder_pid=$!
@@ -355,12 +392,12 @@ jobs:
           [ "$elapsed" -le 1 ] \
             || (echo "Auto-release after SIGTERM took ${elapsed}s — too slow" && exit 1)
 
-          rm -f /tmp/local-mutex-term-test.lock
+          rm -f "/tmp/local-mutex-${H_TERM_TEST}.lock"
           echo "SIGTERM auto-release: OK"
 
       - name: Sequential normal-exit reacquire
         run: |
-          rm -f /tmp/local-mutex-seq-test.lock
+          rm -f "/tmp/local-mutex-${H_SEQ_TEST}.lock"
 
           # Acquire, release (normal exit), reacquire — should be instant.
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh seq-test 'true'
@@ -372,7 +409,7 @@ jobs:
           [ "$elapsed" -le 1 ] \
             || (echo "Sequential reacquire took ${elapsed}s — lock may not be releasing" && exit 1)
 
-          rm -f /tmp/local-mutex-seq-test.lock
+          rm -f "/tmp/local-mutex-${H_SEQ_TEST}.lock"
           echo "Sequential normal-exit reacquire: OK"
 
       # ─── Robustness ──────────────────────────────────────────────────────
@@ -472,111 +509,223 @@ jobs:
           rm -f /tmp/too-many-err
           echo "Too-many-args rejection: OK"
 
-      - name: Special chars in name are sanitized
+      # Names containing characters that would be awkward or unsafe in a
+      # raw filename (slashes, colons, shell metacharacters, spaces) must
+      # still produce a valid lock file. SHA-256 collapses every input
+      # to exactly 64 hex characters, so the result is always a
+      # single-component basename regardless of what the caller supplied.
+      - name: Arbitrary characters in name hash safely
         run: |
-          rm -f /tmp/local-mutex-foo_bar_baz_v1.lock
+          rm -f "/tmp/local-mutex-${H_SPECIAL}.lock"
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh 'foo/bar:baz@v1' 'true'
 
-          # The lockfile should exist under the sanitized name, NOT under
-          # any path that interprets '/' as a directory separator.
-          test -f '/tmp/local-mutex-foo_bar_baz_v1.lock' \
-            || (echo "Expected sanitized lockfile not found" && exit 1)
-          rm -f /tmp/local-mutex-foo_bar_baz_v1.lock
-          echo "Name sanitization: OK"
+          # The lockfile lives at the hash path, NOT at any path that
+          # interprets '/' as a directory separator.
+          test -f "/tmp/local-mutex-${H_SPECIAL}.lock" \
+            || (echo "Expected lockfile not found at /tmp/local-mutex-${H_SPECIAL}.lock" && exit 1)
+          rm -f "/tmp/local-mutex-${H_SPECIAL}.lock"
+          echo "Arbitrary-character name hashing: OK"
 
-      - name: Path traversal in name is sanitized
+      # Path-traversal-looking names cannot escape lock-dir: the lockfile
+      # basename is always exactly 64 hex characters, so even an input
+      # that visually resembles a relative path (`../../etc/passwd`)
+      # resolves to a flat filename inside lock-dir. This is a structural
+      # guarantee from hashing, not a sanitization pass that could be
+      # regressed.
+      - name: Path-traversal name cannot escape lock-dir
         run: |
-          rm -f '/tmp/local-mutex-.._.._etc_passwd.lock'
+          rm -f "/tmp/local-mutex-${H_TRAVERSAL}.lock"
 
-          # The sanitizer keeps dots (they're in the allowed class
-          # [a-zA-Z0-9._-]) and maps slashes to underscores, so
-          # `../../etc/passwd` becomes the flat basename `.._.._etc_passwd`
-          # and the lock file lands in /tmp as a single-component name.
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh '../../etc/passwd' 'true'
 
-          # Asserting the sanitized lock file exists at the expected flat
-          # path is the meaningful check: if sanitization broke, the
-          # unsanitized path (`/tmp/local-mutex-../../etc/passwd.lock`) would
-          # fail with ENOENT inside open(O_CREAT) because the intermediate
-          # `/tmp/local-mutex-..` directory doesn't exist, so the script
-          # would exit non-zero and this sanitized file would not appear.
-          test -f '/tmp/local-mutex-.._.._etc_passwd.lock' \
-            || (echo "Expected sanitized lockfile not found" && exit 1)
+          test -f "/tmp/local-mutex-${H_TRAVERSAL}.lock" \
+            || (echo "Expected lockfile not found at /tmp/local-mutex-${H_TRAVERSAL}.lock" && exit 1)
 
-          rm -f '/tmp/local-mutex-.._.._etc_passwd.lock'
-          echo "Path traversal sanitization: OK"
+          # Negative assertion: a regression that stopped hashing and
+          # instead tried to interpret the name as a path would fail open
+          # with ENOENT because the intermediate `/tmp/local-mutex-..`
+          # directory doesn't exist. Asserting the hashed-path file
+          # exists (above) is the affirmative check; this test's mere
+          # success (exit 0) means we never wrote outside lock-dir.
 
-      # Regression guard for the LC_ALL=C fix on the sanitizer's tr(1)
-      # call. Without LC_ALL=C, BSD tr under a UTF-8 locale (the default
-      # on macos-latest) aborts with exit 1 + "Illegal byte sequence" on
-      # inputs containing invalid UTF-8 bytes, bypassing the ::error::
-      # annotation contract. The fix forces tr into byte-oriented mode
-      # so the non-ASCII byte cleanly maps to '_'. The expected lockfile
-      # is `/tmp/local-mutex-_badname.lock` (leading 0xFF -> '_').
-      - name: Invalid UTF-8 byte in name sanitizes cleanly
+          rm -f "/tmp/local-mutex-${H_TRAVERSAL}.lock"
+          echo "Path-traversal hashing: OK"
+
+      # Both sha256sum (Linux) and shasum -a 256 (macOS) are
+      # byte-oriented, so invalid UTF-8 bytes in the name hash cleanly
+      # on every supported runner without locale configuration. Previous
+      # versions used tr under LC_ALL=C to avoid BSD tr's "Illegal byte
+      # sequence" abort under a UTF-8 locale; hashing removes that
+      # failure mode entirely.
+      - name: Invalid UTF-8 byte in name hashes cleanly
         run: |
-          rm -f /tmp/local-mutex-_badname.lock
           invalid_name=$(printf '\xFFbadname')
-          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh "$invalid_name" 'true'
-          test -f /tmp/local-mutex-_badname.lock \
-            || (echo "lockfile missing for sanitized invalid-UTF-8 input" && exit 1)
-          rm -f /tmp/local-mutex-_badname.lock
-          echo "Invalid UTF-8 byte sanitization: OK"
+          if command -v sha256sum >/dev/null 2>&1; then
+            expected_hash=$(printf '%s' "$invalid_name" | sha256sum | cut -d' ' -f1)
+          else
+            expected_hash=$(printf '%s' "$invalid_name" | shasum -a 256 | cut -d' ' -f1)
+          fi
+          rm -f "/tmp/local-mutex-${expected_hash}.lock"
 
-      - name: Very long name is truncated
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh "$invalid_name" 'true'
+
+          test -f "/tmp/local-mutex-${expected_hash}.lock" \
+            || (echo "lockfile missing for invalid-UTF-8 input" && exit 1)
+          rm -f "/tmp/local-mutex-${expected_hash}.lock"
+          echo "Invalid UTF-8 byte hashing: OK"
+
+      # Any length of input produces a 64-hex basename, because SHA-256
+      # hashes to a fixed size. This replaces the pre-v2.0.1 truncation
+      # behavior that would silently collapse two names sharing a
+      # 200-char prefix onto the same lock. The collision-avoidance test
+      # below proves the upgrade: distinct long names now serialize on
+      # distinct locks.
+      - name: Very long name produces a fixed-length basename
         run: |
-          # Build a name with 250 'a's. Should be truncated to 200 chars
-          # in the lockfile basename so the full path stays well under
-          # NAME_MAX (255).
-          long_name=$(printf 'a%.0s' $(seq 1 250))
-          expected_basename="local-mutex-$(printf 'a%.0s' $(seq 1 200)).lock"
+          # 1000 'a's — well past the old 200-char truncation point.
+          long_name=$(printf 'a%.0s' $(seq 1 1000))
+          if command -v sha256sum >/dev/null 2>&1; then
+            expected_hash=$(printf '%s' "$long_name" | sha256sum | cut -d' ' -f1)
+          else
+            expected_hash=$(printf '%s' "$long_name" | shasum -a 256 | cut -d' ' -f1)
+          fi
+          expected_basename="local-mutex-${expected_hash}.lock"
           rm -f "/tmp/$expected_basename"
 
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh "$long_name" 'true'
 
-          # The lockfile should exist with a 200-char name component.
           test -f "/tmp/$expected_basename" \
-            || (echo "Expected truncated lockfile not found at /tmp/$expected_basename" && exit 1)
+            || (echo "Expected lockfile not found at /tmp/$expected_basename" && exit 1)
 
           rm -f "/tmp/$expected_basename"
-          echo "Long name truncation: OK"
+          echo "Very long name: OK (${#long_name}-char input → 64-hex basename)"
 
-      - name: Single-dot name produces a valid lock file
+      # Two long names that differ only in their last character previously
+      # collapsed to the same lock because tr-sanitized basenames were
+      # truncated to 200 chars. Under SHA-256 they hash to completely
+      # different digests and therefore serialize on distinct locks, which
+      # is the correctness property. This test measures wall clock: if the
+      # names still collided, the two callers would run serially (~6s);
+      # under distinct locks they run in parallel (~3s).
+      - name: Long names with shared 200-char prefix don't collide
         run: |
-          # A name that's already a single allowed character (here '.') must
-          # survive sanitization unchanged and produce a valid lockfile path.
-          # This guards against a future regression that adds an over-eager
-          # "empty sanitized name" check and silently breaks single-character
-          # inputs. The expected lockfile is `/tmp/local-mutex-..lock`, which
-          # is an unusual-looking but valid filename.
-          rm -f /tmp/local-mutex-..lock
+          long_prefix=$(printf 'a%.0s' $(seq 1 200))
+          name_a="${long_prefix}-suffix-a"
+          name_b="${long_prefix}-suffix-b"
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            hash_a=$(printf '%s' "$name_a" | sha256sum | cut -d' ' -f1)
+            hash_b=$(printf '%s' "$name_b" | sha256sum | cut -d' ' -f1)
+          else
+            hash_a=$(printf '%s' "$name_a" | shasum -a 256 | cut -d' ' -f1)
+            hash_b=$(printf '%s' "$name_b" | shasum -a 256 | cut -d' ' -f1)
+          fi
+          rm -f "/tmp/local-mutex-${hash_a}.lock" "/tmp/local-mutex-${hash_b}.lock"
+
+          start=$(date +%s)
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh "$name_a" 'sleep 3' &
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh "$name_b" 'sleep 3' &
+          wait
+          end=$(date +%s)
+          elapsed=$((end - start))
+
+          # parallel ≈ 3s, serialized-because-collided ≈ 6s. Upper bound
+          # 4s catches the regression while tolerating CI jitter.
+          [ "$elapsed" -le 4 ] \
+            || (echo "Expected ~3s parallel (distinct hashes), got ${elapsed}s — hashing may be collapsing long names" && exit 1)
+
+          # Both lockfiles should exist and be distinct.
+          test -f "/tmp/local-mutex-${hash_a}.lock" \
+            || (echo "lockfile for name_a missing" && exit 1)
+          test -f "/tmp/local-mutex-${hash_b}.lock" \
+            || (echo "lockfile for name_b missing" && exit 1)
+          [ "$hash_a" != "$hash_b" ] \
+            || (echo "hashes collided unexpectedly (SHA-256 should never collide on 1-char diff)" && exit 1)
+
+          rm -f "/tmp/local-mutex-${hash_a}.lock" "/tmp/local-mutex-${hash_b}.lock"
+          echo "Long-prefix non-collision: OK (${elapsed}s)"
+
+      - name: Single-character name produces a valid lock file
+        run: |
+          # A single character must produce a valid hashed basename. This
+          # guards against a future regression that adds an over-eager
+          # "minimum length" check on the input and silently breaks
+          # single-character inputs. '.' is the specific case that used
+          # to produce the oddly-named `/tmp/local-mutex-..lock` under
+          # the old sanitizer; it now produces a normal hashed path.
+          rm -f "/tmp/local-mutex-${H_DOT}.lock"
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh '.' 'true'
-          test -f /tmp/local-mutex-..lock \
-            || (echo "Expected single-dot lockfile not found" && exit 1)
-          rm -f /tmp/local-mutex-..lock
-          echo "Single-dot name: OK"
+          test -f "/tmp/local-mutex-${H_DOT}.lock" \
+            || (echo "Expected single-dot lockfile not found at /tmp/local-mutex-${H_DOT}.lock" && exit 1)
+          rm -f "/tmp/local-mutex-${H_DOT}.lock"
+          echo "Single-character name: OK"
 
-      - name: Missing binary fails with clear error
+      # Names containing newlines would split the ::notice:: annotation
+      # into two lines, and the runner's log parser could then re-interpret
+      # the second line as a workflow command. The script rejects any name
+      # containing ASCII control characters (byte 0x00–0x1F or 0x7F) up
+      # front with exit 2 and a clear ::error:: annotation.
+      - name: Newline in name is rejected
+        id: newline-name
+        continue-on-error: true
         run: |
-          # Build a fake PATH directory containing only `tr` (used by the
-          # script's sanitization step). Explicitly does NOT contain lockf
-          # or flock. The script should reach the lock probe, fail cleanly,
-          # and exit 127.
-          #
-          # Use /bin/sh explicitly to match the action.yml's `shell: sh`,
-          # so the test exercises the same interpreter the action will use
-          # in production. Don't symlink sh into the fake PATH — /bin/sh
-          # is the canonical interpreter location and using it directly
-          # makes the test intent unambiguous.
-          #
-          # We can't just `PATH= /bin/sh ...` because that also strips tr,
-          # which the script needs for the name sanitization step. The
-          # fake-PATH approach exercises specifically the "lock binary
-          # missing" case while leaving the script's other dependencies
-          # functional.
+          name=$(printf 'has\nnewline')
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh "$name" 'echo "should not run"' 2>/tmp/newline-err
+
+      - name: Verify newline name was rejected
+        run: |
+          [ "${{ steps.newline-name.outcome }}" = "failure" ] \
+            || (echo "Expected failure on newline name, got: ${{ steps.newline-name.outcome }}" && cat /tmp/newline-err && exit 1)
+          grep -q 'control characters' /tmp/newline-err \
+            || (echo "Expected control-char error message, got:" && cat /tmp/newline-err && exit 1)
+          rm -f /tmp/newline-err
+          echo "Newline name rejection: OK"
+
+      # Symmetric test for non-newline control chars — tab is the most
+      # common one likely to sneak in via indentation or copy-paste. The
+      # rejection logic is a single case pattern, so catching any control
+      # char proves the whole class is rejected; a tab-specific test
+      # provides a second concrete example to prevent a future "only
+      # check \n" narrowing regression.
+      - name: Tab in name is rejected
+        id: tab-name
+        continue-on-error: true
+        run: |
+          name=$(printf 'has\ttab')
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh "$name" 'echo "should not run"' 2>/tmp/tab-err
+
+      - name: Verify tab name was rejected
+        run: |
+          [ "${{ steps.tab-name.outcome }}" = "failure" ] \
+            || (echo "Expected failure on tab name" && cat /tmp/tab-err && exit 1)
+          grep -q 'control characters' /tmp/tab-err \
+            || (echo "Expected control-char error message, got:" && cat /tmp/tab-err && exit 1)
+          rm -f /tmp/tab-err
+          echo "Tab name rejection: OK"
+
+      # Build a fake PATH directory containing only the SHA-256 command
+      # (sha256sum on Linux, shasum on macOS) but explicitly no lockf or
+      # flock. The script should reach the lock-primitive probe, fail
+      # cleanly with exit 127, and emit a ::error:: annotation.
+      #
+      # Use /bin/sh explicitly to match action.yml's `shell: sh`, so the
+      # test exercises the same interpreter the action will use in
+      # production. Don't symlink sh into the fake PATH — /bin/sh is the
+      # canonical interpreter location and using it directly makes the
+      # test intent unambiguous.
+      #
+      # We can't just `PATH= /bin/sh ...` because that also strips the
+      # SHA-256 command, which the script needs to compute the lockfile
+      # basename. The fake-PATH approach exercises specifically the
+      # "lock binary missing" case while leaving the script's other
+      # dependencies functional.
+      - name: Missing lock binary fails with clear error
+        run: |
           test_dir=$(mktemp -d)
-          tr_path=$(command -v tr 2>/dev/null)
-          [ -n "$tr_path" ] && ln -s "$tr_path" "$test_dir/tr"
+          sha256sum_path=$(command -v sha256sum 2>/dev/null || true)
+          shasum_path=$(command -v shasum 2>/dev/null || true)
+          [ -n "$sha256sum_path" ] && ln -s "$sha256sum_path" "$test_dir/sha256sum"
+          [ -n "$shasum_path" ] && ln -s "$shasum_path" "$test_dir/shasum"
 
           set +e
           PATH="$test_dir" /bin/sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh missing-binary 'true' 2>/tmp/err
@@ -588,27 +737,22 @@ jobs:
             || (echo "Expected exit 127 for missing binary, got $exit_code" && cat /tmp/err && exit 1)
 
           grep -q 'neither lockf' /tmp/err \
-            || (echo "Expected clear error message about missing binary, got:" && cat /tmp/err && exit 1)
+            || (echo "Expected clear error message about missing lockf/flock, got:" && cat /tmp/err && exit 1)
 
           rm -f /tmp/err
-          echo "Missing binary error: OK"
+          echo "Missing lock binary error: OK"
 
-      # Exercises the `command -v tr` probe added in Round 3. Builds a
-      # fake PATH containing only `lockf`/`flock` symlinks (no `tr`) so
-      # the script's early probe fails with a clear ::error:: annotation
-      # and exit 127 instead of the shell's default "tr: command not
-      # found" with no annotation. This is the opposite of the existing
-      # "Missing binary" test, which symlinks tr into the fake PATH
-      # precisely to exercise the lockf/flock probe without tripping the
-      # tr probe.
-      #
-      # `|| true` on the `command -v` probes is required because step
-      # shells run under `bash -e` by default: a bare `x=$(command -v
-      # nosuchcmd)` aborts the step when the probe fails, before we ever
-      # reach the test assertions. Ubuntu runners don't ship `lockf` and
-      # macOS runners don't ship `flock`, so at least one probe always
-      # fails on each platform.
-      - name: Missing tr(1) fails with clear error
+      # Symmetric test for the SHA-256 probe: fake PATH containing only
+      # lockf/flock symlinks (no sha256sum, no shasum) makes the script
+      # fail its hashing step with exit 127 and a clear ::error::
+      # annotation instead of the shell's default "command not found"
+      # with no annotation. `|| true` on the `command -v` probes is
+      # required because step shells run under `bash -e` by default: a
+      # bare `x=$(command -v nosuchcmd)` aborts the step when the probe
+      # fails, before we ever reach the test assertions. Ubuntu runners
+      # don't ship `lockf` and macOS runners don't ship `flock`, so at
+      # least one probe always fails on each platform.
+      - name: Missing SHA-256 tool fails with clear error
         run: |
           test_dir=$(mktemp -d)
           lockf_path=$(command -v lockf 2>/dev/null || true)
@@ -617,19 +761,19 @@ jobs:
           [ -n "$flock_path" ] && ln -s "$flock_path" "$test_dir/flock"
 
           set +e
-          PATH="$test_dir" /bin/sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh missing-tr 'true' 2>/tmp/err
+          PATH="$test_dir" /bin/sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh missing-sha 'true' 2>/tmp/err
           exit_code=$?
           set -e
           rm -rf "$test_dir"
 
           [ "$exit_code" = "127" ] \
-            || (echo "Expected exit 127 for missing tr, got $exit_code" && cat /tmp/err && exit 1)
+            || (echo "Expected exit 127 for missing SHA-256 tool, got $exit_code" && cat /tmp/err && exit 1)
 
-          grep -q 'tr(1) not found' /tmp/err \
-            || (echo "Expected clear error message about missing tr, got:" && cat /tmp/err && exit 1)
+          grep -q 'neither sha256sum' /tmp/err \
+            || (echo "Expected clear error message about missing SHA-256 tool, got:" && cat /tmp/err && exit 1)
 
           rm -f /tmp/err
-          echo "Missing tr error: OK"
+          echo "Missing SHA-256 tool error: OK"
 
       # ─── Caller environment propagation ──────────────────────────────────
 
@@ -720,7 +864,7 @@ jobs:
       # reference to assert exact values.
       - name: Waiting and release notices are emitted
         run: |
-          rm -f /tmp/local-mutex-t-diag.lock /tmp/diag-stderr
+          rm -f "/tmp/local-mutex-${H_T_DIAG}.lock" /tmp/diag-stderr
 
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-diag 'sleep 0.2' 2>/tmp/diag-stderr
 
@@ -729,7 +873,7 @@ jobs:
           grep -qE '::notice::local-mutex: released t-diag at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' /tmp/diag-stderr \
             || (echo "release notice missing or malformed" && cat /tmp/diag-stderr && exit 1)
 
-          rm -f /tmp/local-mutex-t-diag.lock /tmp/diag-stderr
+          rm -f "/tmp/local-mutex-${H_T_DIAG}.lock" /tmp/diag-stderr
           echo "Diagnostic notices on success: OK"
 
       # The release notice must fire even when the wrapped command exits
@@ -738,7 +882,7 @@ jobs:
       # matters most.
       - name: Release notice fires when wrapped command fails
         run: |
-          rm -f /tmp/local-mutex-t-diag-fail.lock /tmp/diag-fail-stderr
+          rm -f "/tmp/local-mutex-${H_T_DIAG_FAIL}.lock" /tmp/diag-fail-stderr
 
           set +e
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-diag-fail 'exit 3' 2>/tmp/diag-fail-stderr
@@ -750,7 +894,7 @@ jobs:
           grep -qE '::notice::local-mutex: released t-diag-fail at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' /tmp/diag-fail-stderr \
             || (echo "release notice missing on failure" && cat /tmp/diag-fail-stderr && exit 1)
 
-          rm -f /tmp/local-mutex-t-diag-fail.lock /tmp/diag-fail-stderr
+          rm -f "/tmp/local-mutex-${H_T_DIAG_FAIL}.lock" /tmp/diag-fail-stderr
           echo "Release notice on failure: OK"
 
       # If the caller installs their own EXIT trap, POSIX sh replaces our
@@ -760,7 +904,7 @@ jobs:
       # notice does NOT appear in stderr.
       - name: Caller EXIT trap overrides release notice
         run: |
-          rm -f /tmp/local-mutex-t-diag-trap.lock /tmp/diag-trap-stderr /tmp/diag-trap-marker
+          rm -f "/tmp/local-mutex-${H_T_DIAG_TRAP}.lock" /tmp/diag-trap-stderr /tmp/diag-trap-marker
 
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-diag-trap \
             "trap 'echo caller-trap-fired > /tmp/diag-trap-marker' EXIT; true" \
@@ -780,7 +924,7 @@ jobs:
             exit 1
           fi
 
-          rm -f /tmp/local-mutex-t-diag-trap.lock /tmp/diag-trap-stderr /tmp/diag-trap-marker
+          rm -f "/tmp/local-mutex-${H_T_DIAG_TRAP}.lock" /tmp/diag-trap-stderr /tmp/diag-trap-marker
           echo "Caller trap overrides release notice: OK"
 
       # ─── lock-dir input ──────────────────────────────────────────────────
@@ -791,14 +935,14 @@ jobs:
       - name: Custom lock-dir uses the specified directory
         run: |
           test_dir="$RUNNER_TEMP/custom-lockdir"
-          rm -rf "$test_dir" /tmp/local-mutex-t-custom-dir.lock
+          rm -rf "$test_dir" "/tmp/local-mutex-${H_T_CUSTOM_DIR}.lock"
           mkdir -p "$test_dir"
 
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-custom-dir 'true' "$test_dir"
 
-          test -f "$test_dir/local-mutex-t-custom-dir.lock" \
+          test -f "$test_dir/local-mutex-${H_T_CUSTOM_DIR}.lock" \
             || (echo "Lock file missing at $test_dir" && ls -la "$test_dir" && exit 1)
-          test ! -f /tmp/local-mutex-t-custom-dir.lock \
+          test ! -f "/tmp/local-mutex-${H_T_CUSTOM_DIR}.lock" \
             || (echo "Lock file leaked to /tmp" && exit 1)
 
           rm -rf "$test_dir"
@@ -852,11 +996,11 @@ jobs:
       # "not provided."
       - name: Empty lock-dir falls back to /tmp
         run: |
-          rm -f /tmp/local-mutex-t-empty-ld.lock
+          rm -f "/tmp/local-mutex-${H_T_EMPTY_LD}.lock"
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-empty-ld 'true' ''
-          test -f /tmp/local-mutex-t-empty-ld.lock \
+          test -f "/tmp/local-mutex-${H_T_EMPTY_LD}.lock" \
             || (echo "Lock file missing at /tmp — empty lock-dir did not default" && exit 1)
-          rm -f /tmp/local-mutex-t-empty-ld.lock
+          rm -f "/tmp/local-mutex-${H_T_EMPTY_LD}.lock"
           echo "Empty lock-dir defaults to /tmp: OK"
 
       # Validation: relative paths are rejected. A relative path would
@@ -936,9 +1080,9 @@ jobs:
 
       - name: Verify action-interface lock-dir was honored
         run: |
-          test -f "$RUNNER_TEMP/action-lockdir/local-mutex-t-action-lockdir.lock" \
+          test -f "$RUNNER_TEMP/action-lockdir/local-mutex-${H_T_ACTION_LOCKDIR}.lock" \
             || (echo "lock file not in custom dir" && ls -la "$RUNNER_TEMP/action-lockdir" && exit 1)
-          test ! -f /tmp/local-mutex-t-action-lockdir.lock \
+          test ! -f "/tmp/local-mutex-${H_T_ACTION_LOCKDIR}.lock" \
             || (echo "lock file leaked to /tmp" && exit 1)
           rm -rf "$RUNNER_TEMP/action-lockdir"
           echo "Action-interface lock-dir: OK"
