@@ -69,6 +69,22 @@ case "$name" in
         ;;
 esac
 
+# Reject names containing control characters (byte 0x00–0x1F or 0x7F).
+# The raw name is echoed verbatim into ::notice:: annotations below; a
+# newline would split the annotation into two lines and the second line
+# could be re-interpreted as a workflow command by the runner's log
+# parser. Tabs and other control chars are rejected for the same display
+# hygiene reason — names are identifiers, identifiers don't contain
+# control characters. Non-ASCII bytes in the 0x80–0xFF range are not
+# covered by this check; they are safe because SHA-256 consumes bytes
+# unchanged and printf %s passes them through without reinterpretation.
+case "$name" in
+    *[[:cntrl:]]*)
+        printf '::error::local-mutex: name cannot contain control characters (newline, tab, etc.)\n' >&2
+        exit 2
+        ;;
+esac
+
 if [ -z "$cmd" ]; then
     printf '::error::local-mutex: run command cannot be empty\n' >&2
     exit 2
@@ -82,50 +98,43 @@ case "$cmd" in
         ;;
 esac
 
-# Probe for tr(1) up-front so a missing-tr failure produces a clear
-# ::error:: annotation in the GitHub Actions log instead of the shell's
-# default "tr: command not found" with exit 127 and no annotation.
-command -v tr >/dev/null 2>&1 || {
-    printf '::error::local-mutex: tr(1) not found on PATH\n' >&2
+# Hash the raw name with SHA-256 to derive the lockfile basename. This
+# replaces the previous tr-based character-class sanitization plus
+# 200-char truncation and removes every class of name→filename hazard
+# at once:
+#   - Path traversal ('../../etc/passwd') cannot escape: the basename
+#     is always exactly 64 hex characters plus the 'local-mutex-' prefix
+#     and '.lock' suffix — total 81 bytes, well under NAME_MAX on every
+#     supported filesystem.
+#   - Arbitrary byte sequences including invalid UTF-8 hash cleanly.
+#     Both sha256sum (GNU coreutils) and shasum (Perl) are byte-oriented
+#     and locale-independent, unlike tr under UTF-8 locales.
+#   - Names longer than 200 characters are no longer truncated. Two
+#     callers whose names share a 200-char prefix but differ later
+#     previously collapsed onto the same lock; they now serialize on
+#     distinct locks as expected.
+#   - Names differing only in non-allowed characters (e.g. 'foo$bar'
+#     vs 'foo@bar' vs 'foo bar') previously all collapsed to the same
+#     underscored basename; they now hash to distinct basenames.
+# The raw $name is preserved verbatim for the ::notice:: annotations
+# below so callers still see a human-readable identifier in the step
+# log. NUL bytes cannot reach here because POSIX argv strings terminate
+# at the first NUL under execve(2), so $name is already NUL-free by the
+# time the script runs.
+if command -v sha256sum >/dev/null 2>&1; then
+    name_hash=$(printf '%s' "$name" | sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+    name_hash=$(printf '%s' "$name" | shasum -a 256)
+else
+    printf '::error::local-mutex: neither sha256sum(1) nor shasum(1) found on PATH. Install coreutils (Linux) or use a system that ships Perl (macOS, *BSD).\n' >&2
     exit 127
-}
-
-# Sanitize name to a safe filename component. Anything outside the
-# [a-zA-Z0-9._-] character class becomes an underscore. This blocks path
-# traversal (`../etc/passwd` becomes `.._etc_passwd` — dots are preserved
-# because they're in the allowed class, but slashes collapse to underscores
-# so the result is a flat basename) and maps characters that are awkward
-# in a filename (whitespace, shell metacharacters like $, `, ;, colons,
-# etc.) to underscores so the basename is safe to use as a plain filename
-# component. This is filename hygiene, not shell-injection defense: the
-# sanitized result is only used to build $lockfile, which is then passed
-# as a double-quoted argv argument to `exec lockf`/`exec flock`, never
-# interpolated into an eval or sh -c string. NUL bytes cannot reach this
-# point because POSIX argv strings terminate at the first NUL under
-# execve(2), so $name is already NUL-free by the time the script runs.
-#
-# LC_ALL=C forces tr into byte-oriented mode. Without it, BSD tr under a
-# UTF-8 locale (the default on macOS and on GitHub's macos-latest runner)
-# treats input as UTF-8 characters and aborts with exit 1 + "Illegal byte
-# sequence" when the input contains an invalid UTF-8 byte — which would
-# bypass the ::error:: annotation contract. With LC_ALL=C, tr treats every
-# byte as its own character on every supported platform, so each non-ASCII
-# byte maps to a single '_' regardless of GNU vs BSD tr or caller locale.
-safe_name=$(printf '%s' "$name" | LC_ALL=C tr -c 'a-zA-Z0-9._-' '_')
-
-# Cap the sanitized name at 200 characters so the resulting lock file
-# basename ("local-mutex-<name>.lock", up to 217 chars) stays well under
-# the NAME_MAX per-component limit (typically 255). Truncating long names
-# instead of rejecting them keeps the action friendly to consumers that
-# generate long descriptive names from version strings or hash digests.
-# Names that share the first 200 characters after sanitization will collide
-# and share the same lock — callers with long descriptive names should keep
-# the distinguishing portion within the first 200 characters.
-# Keep this length in sync with the documented limit in action.yml and README.md.
-# %.200s truncates to 200 BYTES; safe here because the prior LC_ALL=C tr
-# step maps every non-ASCII byte to '_', so the input to truncation is
-# always ASCII-only and bytes == chars.
-safe_name=$(printf '%.200s' "$safe_name")
+fi
+# Both sha256sum(1) and shasum(1) emit "<hex>  <filename>" (stdin → "-").
+# Strip everything from the first space onward with POSIX parameter
+# expansion so we don't have to depend on cut(1) being on PATH — the
+# "missing lock binary" test exercises a locked-down PATH that only
+# contains sha256sum/shasum, and any extra dependency here would break it.
+name_hash=${name_hash%% *}
 
 # Validate lock-dir before building the lockfile path. The default /tmp
 # is also validated so the error shape is consistent whether the caller
@@ -153,7 +162,7 @@ if [ ! -w "$lock_dir" ]; then
     exit 2
 fi
 
-lockfile="${lock_dir}/local-mutex-${safe_name}.lock"
+lockfile="${lock_dir}/local-mutex-${name_hash}.lock"
 
 # Emit a diagnostic notice before and after the lock acquire so callers
 # debugging a hung step can see what the step is blocked on and when it
@@ -162,9 +171,14 @@ lockfile="${lock_dir}/local-mutex-${safe_name}.lock"
 # and leaves no post-hook here. If the caller's `run` installs its own
 # EXIT trap, ours is replaced and the release notice drops; caller's
 # trap still runs.
-LMX_NAME="$safe_name"
+#
+# $name is emitted verbatim (not $name_hash) so callers see the human
+# identifier they supplied rather than a 64-hex digest. Control chars
+# in $name are already rejected above so the notice is always a single
+# safe line of output.
+LMX_NAME="$name"
 export LMX_NAME
-printf '::notice::local-mutex: waiting for lock %s at %s\n' "$safe_name" "$(date -u +%FT%TZ)" >&2
+printf '::notice::local-mutex: waiting for lock %s at %s\n' "$name" "$(date -u +%FT%TZ)" >&2
 
 # shellcheck disable=SC2016
 # Single quotes are intentional: $-expansion must defer to trap-fire time.

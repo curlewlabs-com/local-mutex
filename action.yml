@@ -9,15 +9,14 @@ branding:
 inputs:
   name:
     description: >-
-      Lock identifier. Used to form the lock file basename under /tmp
-      (as 'local-mutex-<sanitized-name>.lock'). Pick a name that describes
-      the resource being protected (e.g. 'tool-update', 'dep-cache-rebuild',
-      'db-migrate'). Names with characters outside [a-zA-Z0-9._-] are
-      sanitized to underscores. Sanitization is lossy: names that differ
-      only in non-allowed characters will map to the same lock. Names
-      longer than 200 characters are truncated. Empty or whitespace-only
-      values are rejected. Names that share the first 200 characters
-      after sanitization will collide and share the same lock.
+      Lock identifier. Echoed verbatim into the diagnostic ::notice::
+      annotations and hashed with SHA-256 to form the lock file
+      basename under /tmp (as 'local-mutex-<64-hex-digest>.lock').
+      Pick a name that describes the resource being protected
+      (e.g. 'tool-update', 'dep-cache-rebuild', 'db-migrate'). Any
+      length and byte sequence is accepted; empty, whitespace-only,
+      and control-character-containing (newline, tab, etc.) values
+      are rejected.
     required: true
   run:
     description: >-
@@ -33,10 +32,10 @@ inputs:
       across the runners on the same machine — for example, on
       containerized self-hosted runners where /tmp is container-local.
       The directory must exist and be writable by the runner user. The
-      lock file name inside this directory is always
-      'local-mutex-<sanitized-name>.lock' so callers setting the same
-      name from two runners continue to serialize as long as they share
-      lock-dir.
+      lock file basename inside this directory is the SHA-256 of name
+      (as 'local-mutex-<64-hex-digest>.lock'), so callers setting the
+      same name from two runners continue to serialize as long as
+      they share lock-dir.
     required: false
     default: ''
 
