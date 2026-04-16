@@ -438,20 +438,39 @@ jobs:
         continue-on-error: true
         run: |
           # Invoke the script directly with one argument to exercise the
-          # `$# -ne 2` branch. The composite action always passes both
-          # inputs, so this path can only be reached by direct invocation —
-          # we test it explicitly because the script has dedicated
-          # rejection logic for it.
+          # `$# -lt 2` branch. The composite action always passes two or
+          # three inputs, so this path can only be reached by direct
+          # invocation — we test it explicitly because the script has
+          # dedicated rejection logic for it.
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh only-one-arg 2>/tmp/argc-err
 
       - name: Verify wrong arg count was rejected
         run: |
           [ "${{ steps.bad-argc.outcome }}" = "failure" ] \
             || (echo "Expected failure on one-arg invocation, got: ${{ steps.bad-argc.outcome }}" && cat /tmp/argc-err && exit 1)
-          grep -q 'expected exactly 2 arguments' /tmp/argc-err \
+          grep -q 'expected 2 or 3 arguments' /tmp/argc-err \
             || (echo "Expected arg-count error message, got:" && cat /tmp/argc-err && exit 1)
           rm -f /tmp/argc-err
           echo "Arg count rejection: OK"
+
+      # Exercises the `$# -gt 3` branch, symmetric to the one-arg test
+      # above. Guards against a future regression that accidentally
+      # loosens the upper bound and starts silently ignoring trailing
+      # arguments.
+      - name: Too many arguments fails clean
+        id: too-many-argc
+        continue-on-error: true
+        run: |
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh n c /tmp extra 2>/tmp/too-many-err
+
+      - name: Verify too-many-args was rejected
+        run: |
+          [ "${{ steps.too-many-argc.outcome }}" = "failure" ] \
+            || (echo "Expected failure on four-arg invocation" && cat /tmp/too-many-err && exit 1)
+          grep -q 'expected 2 or 3 arguments' /tmp/too-many-err \
+            || (echo "Expected arg-count error, got:" && cat /tmp/too-many-err && exit 1)
+          rm -f /tmp/too-many-err
+          echo "Too-many-args rejection: OK"
 
       - name: Special chars in name are sanitized
         run: |
@@ -763,3 +782,163 @@ jobs:
 
           rm -f /tmp/local-mutex-t-diag-trap.lock /tmp/diag-trap-stderr /tmp/diag-trap-marker
           echo "Caller trap overrides release notice: OK"
+
+      # ─── lock-dir input ──────────────────────────────────────────────────
+
+      # Custom lock-dir puts the lock file in the specified directory and
+      # NOT in /tmp. The negative-leak assertion catches regressions where
+      # the path construction silently falls back to /tmp.
+      - name: Custom lock-dir uses the specified directory
+        run: |
+          test_dir="$RUNNER_TEMP/custom-lockdir"
+          rm -rf "$test_dir" /tmp/local-mutex-t-custom-dir.lock
+          mkdir -p "$test_dir"
+
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-custom-dir 'true' "$test_dir"
+
+          test -f "$test_dir/local-mutex-t-custom-dir.lock" \
+            || (echo "Lock file missing at $test_dir" && ls -la "$test_dir" && exit 1)
+          test ! -f /tmp/local-mutex-t-custom-dir.lock \
+            || (echo "Lock file leaked to /tmp" && exit 1)
+
+          rm -rf "$test_dir"
+          echo "Custom lock-dir: OK"
+
+      # The central mutual-exclusion invariant must still hold when both
+      # callers share a custom lock-dir. Mirrors the existing "Two
+      # concurrent same-name acquires serialize" test but uses a non-/tmp
+      # directory, which is the whole point of the input: prove the
+      # kernel-level lock still works from a different shared filesystem.
+      - name: Concurrent same-name serializes in custom lock-dir
+        run: |
+          test_dir="$RUNNER_TEMP/concurrent-lockdir"
+          rm -rf "$test_dir"
+          mkdir -p "$test_dir"
+          rm -f /tmp/cl-1-start /tmp/cl-1-end /tmp/cl-2-start /tmp/cl-2-end
+
+          ts='python3 -c "import time; print(time.time_ns())"'
+          hold_sleep=0.5
+          tolerance=100000000
+
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh cl-2 \
+            "$ts > /tmp/cl-1-start; sleep $hold_sleep; $ts > /tmp/cl-1-end" \
+            "$test_dir" &
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh cl-2 \
+            "$ts > /tmp/cl-2-start; sleep $hold_sleep; $ts > /tmp/cl-2-end" \
+            "$test_dir" &
+          wait
+
+          s1=$(cat /tmp/cl-1-start); e1=$(cat /tmp/cl-1-end)
+          s2=$(cat /tmp/cl-2-start); e2=$(cat /tmp/cl-2-end)
+
+          if [ "$s1" -le "$s2" ]; then
+            earlier_end=$e1; later_start=$s2; order="1-then-2"
+          else
+            earlier_end=$e2; later_start=$s1; order="2-then-1"
+          fi
+
+          if [ "$earlier_end" -gt "$((later_start + tolerance))" ]; then
+            echo "Overlap in custom lock-dir ($order): earlier_end=$earlier_end later_start=$later_start"
+            exit 1
+          fi
+
+          rm -f /tmp/cl-1-start /tmp/cl-1-end /tmp/cl-2-start /tmp/cl-2-end
+          rm -rf "$test_dir"
+          echo "Concurrent serialization in custom lock-dir: OK ($order)"
+
+      # Empty-string third arg falls back to /tmp. This matches the
+      # action.yml surface: an unset `lock-dir:` input sends an empty
+      # string down to the script, which must treat it the same as
+      # "not provided."
+      - name: Empty lock-dir falls back to /tmp
+        run: |
+          rm -f /tmp/local-mutex-t-empty-ld.lock
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-empty-ld 'true' ''
+          test -f /tmp/local-mutex-t-empty-ld.lock \
+            || (echo "Lock file missing at /tmp — empty lock-dir did not default" && exit 1)
+          rm -f /tmp/local-mutex-t-empty-ld.lock
+          echo "Empty lock-dir defaults to /tmp: OK"
+
+      # Validation: relative paths are rejected. A relative path would
+      # resolve against CWD which is not stable across runners/jobs, so
+      # two callers with the "same" relative lock-dir could end up with
+      # locks on different inodes — mutex silently breaks.
+      - name: Relative lock-dir is rejected
+        id: rel-lockdir
+        continue-on-error: true
+        run: |
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-rel 'true' 'relative/path' 2>/tmp/rel-err
+
+      - name: Verify relative lock-dir was rejected
+        run: |
+          [ "${{ steps.rel-lockdir.outcome }}" = "failure" ] \
+            || (echo "Expected failure on relative lock-dir" && exit 1)
+          grep -q 'must be an absolute path' /tmp/rel-err \
+            || (echo "Expected absolute-path error, got:" && cat /tmp/rel-err && exit 1)
+          rm -f /tmp/rel-err
+          echo "Relative lock-dir rejection: OK"
+
+      # Validation: non-existent directory is rejected before any
+      # lockfile work. Without this check the failure happens inside
+      # lockf/flock with a less useful error.
+      - name: Non-existent lock-dir is rejected
+        id: missing-lockdir
+        continue-on-error: true
+        run: |
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-noex 'true' '/this-path-should-not-exist-xyz123' 2>/tmp/noex-err
+
+      - name: Verify non-existent lock-dir was rejected
+        run: |
+          [ "${{ steps.missing-lockdir.outcome }}" = "failure" ] \
+            || (echo "Expected failure on non-existent lock-dir" && exit 1)
+          grep -q 'does not exist or is not a directory' /tmp/noex-err \
+            || (echo "Expected non-existent error, got:" && cat /tmp/noex-err && exit 1)
+          rm -f /tmp/noex-err
+          echo "Non-existent lock-dir rejection: OK"
+
+      # Validation: non-writable directory is rejected. Protects against
+      # a read-only mount silently preventing the lock file from being
+      # created. Cleanup uses a trap so the 555 chmod is always reversed
+      # even when the script call exits the step early.
+      - name: Non-writable lock-dir is rejected
+        id: ro-lockdir
+        continue-on-error: true
+        run: |
+          test_dir="$RUNNER_TEMP/ro-lockdir"
+          rm -rf "$test_dir"
+          mkdir -p "$test_dir"
+          trap 'chmod 755 "$test_dir" 2>/dev/null; rm -rf "$test_dir"' EXIT
+          chmod 555 "$test_dir"
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-ro 'true' "$test_dir" 2>/tmp/ro-err
+
+      - name: Verify non-writable lock-dir was rejected
+        run: |
+          [ "${{ steps.ro-lockdir.outcome }}" = "failure" ] \
+            || (echo "Expected failure on non-writable lock-dir" && exit 1)
+          grep -q 'is not writable' /tmp/ro-err \
+            || (echo "Expected non-writable error, got:" && cat /tmp/ro-err && exit 1)
+          rm -f /tmp/ro-err
+          echo "Non-writable lock-dir rejection: OK"
+
+      # Through the action interface: setting `lock-dir:` on a `uses: ./`
+      # step must route through action.yml → the script's 3rd positional
+      # arg → the lock-file path. Proves the full plumbing, not just the
+      # script's direct-invocation path.
+      - name: Prepare custom lock-dir for action-interface test
+        run: mkdir -p "$RUNNER_TEMP/action-lockdir"
+
+      - name: lock-dir input routes through action.yml
+        uses: ./
+        with:
+          name: t-action-lockdir
+          lock-dir: ${{ runner.temp }}/action-lockdir
+          run: echo "locked under custom dir"
+
+      - name: Verify action-interface lock-dir was honored
+        run: |
+          test -f "$RUNNER_TEMP/action-lockdir/local-mutex-t-action-lockdir.lock" \
+            || (echo "lock file not in custom dir" && ls -la "$RUNNER_TEMP/action-lockdir" && exit 1)
+          test ! -f /tmp/local-mutex-t-action-lockdir.lock \
+            || (echo "lock file leaked to /tmp" && exit 1)
+          rm -rf "$RUNNER_TEMP/action-lockdir"
+          echo "Action-interface lock-dir: OK"

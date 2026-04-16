@@ -79,12 +79,29 @@ Two runners running the same build in parallel would otherwise race on writing t
 
 [`curlewlabs-com/local-cache`](https://github.com/curlewlabs-com/local-cache) — a sister composite action that provides a local-disk cache for self-hosted runners — uses `local-mutex` for exactly this pattern. Its `save/action.yml` wraps the per-key write step in `local-mutex` so concurrent saves of the same cache key serialize via `lockf`/`flock` instead of needing per-script PID tracking and stale-lock recovery. See its [`save/action.yml`](https://github.com/curlewlabs-com/local-cache/blob/main/save/action.yml) for a working production usage.
 
+### Example: containerized runners with a non-shared `/tmp`
+
+By default the lock file lives under `/tmp`. On bare-metal self-hosted runners that's already shared across every runner on the host, so callers don't need to think about it. In containerized deployments where each runner sees its own `/tmp`, point `lock-dir` at a bind-mounted path on the host:
+
+```yaml
+- name: Update shared binary
+  uses: curlewlabs-com/local-mutex@v2
+  with:
+    name: tool-update
+    lock-dir: /opt/runner-shared/locks
+    run: |
+      /opt/runner-shared/tools/update-toolchain.sh
+```
+
+All runners must mount the same host directory at the same in-container path. The sanitized lock-file name inside `lock-dir` is the same regardless of which runner acquires it, so two runners sharing `lock-dir` and `name` will serialize via the host kernel's lock on the shared inode.
+
 ## Inputs
 
 | Name | Required | Description |
 |---|---|---|
-| `name` | yes | Lock identifier. Used to form the lock file basename under `/tmp` (as `local-mutex-<sanitized-name>.lock`). Pick a name that describes the resource being protected. Characters outside `[a-zA-Z0-9._-]` are sanitized to underscores. Sanitization is lossy: names that differ only in non-allowed characters will map to the same lock (`foo$bar`, `foo@bar`, and `foo bar` all become `foo_bar`). Names longer than 200 characters are truncated. Names that share the first 200 characters after sanitization will collide and share the same lock. Empty or whitespace-only values are rejected. |
+| `name` | yes | Lock identifier. Used to form the lock file basename (as `local-mutex-<sanitized-name>.lock`) inside `lock-dir`. Pick a name that describes the resource being protected. Characters outside `[a-zA-Z0-9._-]` are sanitized to underscores. Sanitization is lossy: names that differ only in non-allowed characters will map to the same lock (`foo$bar`, `foo@bar`, and `foo bar` all become `foo_bar`). Names longer than 200 characters are truncated. Names that share the first 200 characters after sanitization will collide and share the same lock. Empty or whitespace-only values are rejected. |
 | `run` | yes | Shell command to execute while holding the lock. Runs under `/bin/sh`. Multi-line scripts work. Empty or whitespace-only `run` is rejected. |
+| `lock-dir` | no | Absolute path to the directory where the lock file is created. Defaults to `/tmp`. Override only when `/tmp` isn't shared across the runners on the same machine — for example, on containerized self-hosted runners where `/tmp` is container-local. The directory must exist and be writable by the runner user. Callers setting the same `name` from two runners continue to serialize as long as they share the same `lock-dir`. |
 
 ## Outputs
 
@@ -130,10 +147,10 @@ If the wrapped `run` command installs its own `trap '…' EXIT`, POSIX shell rep
 
 ## How it works
 
-The script sanitizes the `name` input into a safe filename component, builds a lockfile path under `/tmp`, emits the wait notice, then probes for and execs the chosen lock primitive. The locking core (after validation, sanitization, and the diagnostic trap setup described above) is:
+The script sanitizes the `name` input into a safe filename component, validates `lock-dir` (default `/tmp`), builds a lockfile path under it, emits the wait notice, then probes for and execs the chosen lock primitive. The locking core (after validation, sanitization, and the diagnostic trap setup described above) is:
 
 ```sh
-lockfile="/tmp/local-mutex-${safe_name}.lock"
+lockfile="${lock_dir}/local-mutex-${safe_name}.lock"
 
 if command -v lockf >/dev/null 2>&1; then
     exec lockf -k "$lockfile" sh -c "$cmd"
@@ -169,7 +186,7 @@ No timeout flag (the job-level `timeout-minutes` bounds it). No PID tracking. No
 - **You need fairness or FIFO ordering across operating systems.** On Linux (`flock`), acquisition order is not guaranteed — whichever caller the kernel happens to wake up first wins. On macOS/BSD, the `lockf(1)` man page documents that `-k` "will guarantee lock ordering," which this action passes. If your fleet mixes both OSes, don't design around FIFO; if it's all BSD-family, you can rely on it.
 - **You need reentrant locks.** A process acquiring the same lock twice will deadlock.
 - **You need a lock with a timeout shorter than the job.** Use `timeout-minutes` on the calling step instead.
-- **You're trying to serialize work outside the runner machine** (a Cloudflare API call, a database operation, a remote service). The lock is local — it can't see beyond `/tmp`.
+- **You're trying to serialize work outside the runner machine** (a Cloudflare API call, a database operation, a remote service). The lock is local — it can't see beyond the runner host's filesystem.
 
 ## Comparison with the alternatives
 
@@ -190,7 +207,7 @@ No timeout flag (the job-level `timeout-minutes` bounds it). No PID tracking. No
 - One of `lockf(1)` or `flock(1)` on `PATH`. Both are standard:
   - **macOS:** `lockf` is at `/usr/bin/lockf` on every install (BSD heritage).
   - **Linux:** `flock` is in `util-linux`, installed by default on every modern distribution.
-- A writable `/tmp` directory shared between concurrent runners. (If your runners somehow have separate `/tmp` namespaces, this won't work — use a distributed lock instead.)
+- A writable directory shared between concurrent runners. Defaults to `/tmp`, which already fits bare-metal self-hosted runners under the same OS user. Containerized runners that don't share `/tmp` should pass `lock-dir:` pointing at a bind-mounted host path. If no directory is shared between the runners you want to coordinate, a local mutex can't help — use a distributed lock instead.
 
 GitHub-hosted runners (`ubuntu-latest`, `macos-latest`) also work — they have the binaries — but the use case doesn't apply because GitHub-hosted runners are ephemeral and don't share state across jobs.
 
