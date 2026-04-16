@@ -687,3 +687,79 @@ jobs:
             expected="$GITHUB_WORKSPACE"
             [ "$actual" = "$expected" ] \
               || (echo "Expected pwd=$expected, got $actual" && exit 1)
+
+      # ─── Diagnostic notices ──────────────────────────────────────────────
+
+      # Both bookend notices must reach stderr so callers debugging a hung
+      # step can see what the step is blocked on and when it cleared.
+      # Invoked via direct script call so stderr can be captured to a file
+      # and grep'd — the `uses: ./` path sends notices to the job log
+      # where they aren't easily read back within the same job.
+      #
+      # The timestamp pattern is `YYYY-MM-DDTHH:MM:SSZ` (UTC). The regex
+      # only checks structure, not values, because we have no stable time
+      # reference to assert exact values.
+      - name: Waiting and release notices are emitted
+        run: |
+          rm -f /tmp/local-mutex-t-diag.lock /tmp/diag-stderr
+
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-diag 'sleep 0.2' 2>/tmp/diag-stderr
+
+          grep -qE '::notice::local-mutex: waiting for lock t-diag at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' /tmp/diag-stderr \
+            || (echo "wait notice missing or malformed" && cat /tmp/diag-stderr && exit 1)
+          grep -qE '::notice::local-mutex: released t-diag at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' /tmp/diag-stderr \
+            || (echo "release notice missing or malformed" && cat /tmp/diag-stderr && exit 1)
+
+          rm -f /tmp/local-mutex-t-diag.lock /tmp/diag-stderr
+          echo "Diagnostic notices on success: OK"
+
+      # The release notice must fire even when the wrapped command exits
+      # non-zero — a diagnostic bookend that only appears on success is
+      # useless precisely when debugging failures, which is when it
+      # matters most.
+      - name: Release notice fires when wrapped command fails
+        run: |
+          rm -f /tmp/local-mutex-t-diag-fail.lock /tmp/diag-fail-stderr
+
+          set +e
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-diag-fail 'exit 3' 2>/tmp/diag-fail-stderr
+          rc=$?
+          set -e
+
+          [ "$rc" = "3" ] \
+            || (echo "Expected exit 3, got $rc" && cat /tmp/diag-fail-stderr && exit 1)
+          grep -qE '::notice::local-mutex: released t-diag-fail at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' /tmp/diag-fail-stderr \
+            || (echo "release notice missing on failure" && cat /tmp/diag-fail-stderr && exit 1)
+
+          rm -f /tmp/local-mutex-t-diag-fail.lock /tmp/diag-fail-stderr
+          echo "Release notice on failure: OK"
+
+      # If the caller installs their own EXIT trap, POSIX sh replaces our
+      # trap with theirs. The contract: caller's trap still runs
+      # correctly; our release notice is suppressed. This test proves
+      # both halves — the caller's marker is written, and our release
+      # notice does NOT appear in stderr.
+      - name: Caller EXIT trap overrides release notice
+        run: |
+          rm -f /tmp/local-mutex-t-diag-trap.lock /tmp/diag-trap-stderr /tmp/diag-trap-marker
+
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-diag-trap \
+            "trap 'echo caller-trap-fired > /tmp/diag-trap-marker' EXIT; true" \
+            2>/tmp/diag-trap-stderr
+
+          test -f /tmp/diag-trap-marker \
+            || (echo "caller's trap did not fire" && cat /tmp/diag-trap-stderr && exit 1)
+          [ "$(cat /tmp/diag-trap-marker)" = "caller-trap-fired" ] \
+            || (echo "caller's trap marker has wrong content" && cat /tmp/diag-trap-marker && exit 1)
+
+          grep -q '::notice::local-mutex: waiting for lock t-diag-trap' /tmp/diag-trap-stderr \
+            || (echo "wait notice should still appear" && cat /tmp/diag-trap-stderr && exit 1)
+
+          if grep -q '::notice::local-mutex: released t-diag-trap' /tmp/diag-trap-stderr; then
+            echo "release notice should have been suppressed by caller's trap"
+            cat /tmp/diag-trap-stderr
+            exit 1
+          fi
+
+          rm -f /tmp/local-mutex-t-diag-trap.lock /tmp/diag-trap-stderr /tmp/diag-trap-marker
+          echo "Caller trap overrides release notice: OK"

@@ -115,9 +115,22 @@ If your inner command writes to `$GITHUB_OUTPUT` and you need those values in la
   run: echo "Built ${{ steps.build.outputs.build-hash }}"
 ```
 
+## Diagnostic notices
+
+The action emits two [GitHub Actions `::notice::` annotations](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-a-notice-message) to stderr around each lock acquire:
+
+```
+::notice::local-mutex: waiting for lock <name> at <UTC timestamp>
+::notice::local-mutex: released <name> at <UTC timestamp>
+```
+
+The wait notice is emitted before handing off to the lock primitive, so a hung step shows what it's blocked on. The release notice is emitted after the wrapped command exits — on success, on failure, and on signal-driven exits the inner shell can trap. Both notices appear in the step log and surface in the job summary annotations.
+
+If the wrapped `run` command installs its own `trap '…' EXIT`, POSIX shell replaces our trap with the caller's. The caller's trap still runs correctly; only our release notice is suppressed. The wait notice is unaffected.
+
 ## How it works
 
-The script sanitizes the `name` input into a safe filename component, builds a lockfile path under `/tmp`, then probes for and execs the chosen lock primitive. The actual core (after the validation and sanitization steps) is:
+The script sanitizes the `name` input into a safe filename component, builds a lockfile path under `/tmp`, emits the wait notice, then probes for and execs the chosen lock primitive. The locking core (after validation, sanitization, and the diagnostic trap setup described above) is:
 
 ```sh
 lockfile="/tmp/local-mutex-${safe_name}.lock"
