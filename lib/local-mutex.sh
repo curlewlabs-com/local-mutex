@@ -122,13 +122,19 @@ esac
 # at the first NUL under execve(2), so $name is already NUL-free by the
 # time the script runs.
 if command -v sha256sum >/dev/null 2>&1; then
-    name_hash=$(printf '%s' "$name" | sha256sum | cut -d' ' -f1)
+    name_hash=$(printf '%s' "$name" | sha256sum)
 elif command -v shasum >/dev/null 2>&1; then
-    name_hash=$(printf '%s' "$name" | shasum -a 256 | cut -d' ' -f1)
+    name_hash=$(printf '%s' "$name" | shasum -a 256)
 else
     printf '::error::local-mutex: neither sha256sum(1) nor shasum(1) found on PATH. Install coreutils (Linux) or use a system that ships Perl (macOS, *BSD).\n' >&2
     exit 127
 fi
+# Both sha256sum(1) and shasum(1) emit "<hex>  <filename>" (stdin → "-").
+# Strip everything from the first space onward with POSIX parameter
+# expansion so we don't have to depend on cut(1) being on PATH — the
+# "missing lock binary" test exercises a locked-down PATH that only
+# contains sha256sum/shasum, and any extra dependency here would break it.
+name_hash=${name_hash%% *}
 
 # Validate lock-dir before building the lockfile path. The default /tmp
 # is also validated so the error shape is consistent whether the caller
