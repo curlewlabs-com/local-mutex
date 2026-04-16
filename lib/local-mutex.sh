@@ -122,6 +122,24 @@ safe_name=$(printf '%.200s' "$safe_name")
 
 lockfile="/tmp/local-mutex-${safe_name}.lock"
 
+# Emit a diagnostic notice before and after the lock acquire so callers
+# debugging a hung step can see what the step is blocked on and when it
+# cleared. The release notice lives in an EXIT trap inside the inner
+# shell because `exec lockf`/`exec flock` replaces this script's process
+# and leaves no post-hook here. If the caller's `run` installs its own
+# EXIT trap, ours is replaced and the release notice drops; caller's
+# trap still runs.
+LMX_NAME="$safe_name"
+export LMX_NAME
+printf '::notice::local-mutex: waiting for lock %s at %s\n' "$safe_name" "$(date -u +%FT%TZ)" >&2
+
+# shellcheck disable=SC2016
+# Single quotes are intentional: $-expansion must defer to trap-fire time.
+trap_line='trap '\''printf "::notice::local-mutex: released %s at %s\n" "$LMX_NAME" "$(date -u +%FT%TZ)" >&2'\'' EXIT'
+
+inner_script="$trap_line
+$cmd"
+
 if command -v lockf >/dev/null 2>&1; then
     # -k keeps the lock file across acquisitions. Without -k, lockf
     # `unlink(2)`s the lock file on release, which lets a fresh acquirer
@@ -130,7 +148,7 @@ if command -v lockf >/dev/null 2>&1; then
     # inode. Both end up holding locks on different inodes — the mutex
     # silently breaks. -k skips the unlink so all callers always lock
     # the same inode.
-    exec lockf -k "$lockfile" sh -c "$cmd"
+    exec lockf -k "$lockfile" sh -c "$inner_script"
 elif command -v flock >/dev/null 2>&1; then
     # flock holds the lock on a file descriptor and never `unlink()`s the
     # lock file, so the unlink-then-open inode race that lockf needs `-k`
@@ -139,7 +157,7 @@ elif command -v flock >/dev/null 2>&1; then
     # so the wrapped command's descendants don't inherit it — without
     # this, killing the flock parent leaves orphan processes holding the
     # lock and the SIGKILL release guarantee silently breaks.
-    exec flock -o -x "$lockfile" sh -c "$cmd"
+    exec flock -o -x "$lockfile" sh -c "$inner_script"
 else
     printf '::error::local-mutex: neither lockf(1) nor flock(1) found on PATH. Install util-linux (Linux) or use a system that ships lockf (macOS, *BSD).\n' >&2
     exit 127
