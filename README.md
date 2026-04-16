@@ -18,7 +18,7 @@ Distributed mutex actions (`actions-mutex`, `gh-action-locks`, k8s-lock, etc.) a
 
 ```yaml
 - name: Update Claude Code
-  uses: curlewlabs-com/local-mutex@v1
+  uses: curlewlabs-com/local-mutex@v2
   with:
     name: claude-update
     run: |
@@ -36,7 +36,7 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Update Claude Code
-        uses: curlewlabs-com/local-mutex@v1
+        uses: curlewlabs-com/local-mutex@v2
         with:
           name: claude-update
           run: |
@@ -53,7 +53,7 @@ If multiple runners hit this job at the same time, the update step on each one w
 
 ```yaml
 - name: Install CocoaPods dependencies
-  uses: curlewlabs-com/local-mutex@v1
+  uses: curlewlabs-com/local-mutex@v2
   with:
     name: cocoapods-spec
     run: |
@@ -67,7 +67,7 @@ Multiple macOS runners sharing `~/.cocoapods` will race on spec-cache updates. W
 
 ```yaml
 - name: Rebuild shared dependency cache
-  uses: curlewlabs-com/local-mutex@v1
+  uses: curlewlabs-com/local-mutex@v2
   with:
     name: dep-cache-rebuild
     run: |
@@ -116,7 +116,7 @@ If your inner command writes to `$GITHUB_OUTPUT` and you need those values in la
 ```yaml
 - name: Build under lock
   id: locked-build
-  uses: curlewlabs-com/local-mutex@v1
+  uses: curlewlabs-com/local-mutex@v2
   with:
     name: shared-build
     run: |
@@ -232,32 +232,25 @@ sh lib/local-mutex.sh manual-check 'date; echo "terminal 1 acquired"; sleep 10; 
 sh lib/local-mutex.sh manual-check 'date; echo "terminal 2 acquired"; echo "terminal 2 releasing"; date'
 ```
 
-Expected result: Terminal 2 blocks until Terminal 1 exits, then acquires the same lock immediately after. If you want to mimic the action more closely, repeat the same experiment from two separate self-hosted runner jobs on the same host using `uses: curlewlabs-com/local-mutex@v1` with the same `name:`.
+Expected result: Terminal 2 blocks until Terminal 1 exits, then acquires the same lock immediately after. If you want to mimic the action more closely, repeat the same experiment from two separate self-hosted runner jobs on the same host using `uses: curlewlabs-com/local-mutex@v2` with the same `name:`.
 
 ## Releasing
 
-Users pin to `@v1` (floating major tag).
+Every release ships **both** an immutable patch tag (`vMAJOR.MINOR.PATCH`, e.g. `v2.0.1`) and a floating major tag (`vMAJOR`, e.g. `v2`). Users who want exact reproducibility pin to `@v2.0.1`; users who want automatic minor/patch updates inside the v2 series pin to `@v2`. Both tag kinds exist for every release. See [AGENTS.md](AGENTS.md) for the full contract.
 
-**First release (v1.0.0):**
-
-```sh
-git tag v1.0.0 HEAD
-git tag v1 HEAD
-git push origin v1.0.0 v1
-gh release create v1.0.0 --title "v1.0.0" --notes "Initial release"
-```
-
-**Subsequent patch/minor releases:** after merging the change to `main`,
+After merging to `main`:
 
 ```sh
-# Move the floating major tag so @v1 users get the update.
-git tag -f v1 HEAD
-git push --force origin v1
+# Immutable patch tag — never force-moved once pushed.
+git tag v2.x.y HEAD
+git push origin v2.x.y
 
-# Create a versioned release for the marketplace.
-git tag v1.x.y HEAD
-git push origin v1.x.y
-gh release create v1.x.y --title "v1.x.y" --notes "changelog here"
+# Floating major tag — force-updated to the latest v2.x.y commit on every release.
+git tag -f v2 HEAD
+git push --force origin v2
+
+# GitHub release for the marketplace.
+gh release create v2.x.y --title "v2.x.y" --notes "changelog here"
 ```
 
 ## License
