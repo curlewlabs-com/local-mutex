@@ -40,13 +40,19 @@ fi
 
 name="$1"
 cmd="$2"
-# Third arg is the lock directory. Empty or unset means "use the default
-# /tmp" — this matches the action.yml surface where `lock-dir` is an
-# optional input with an empty-string default. Callers on self-hosted
-# runners with a non-shared /tmp (containerized runners, chrooted
-# sandboxes, or anywhere /tmp doesn't see across sibling runners) can
-# point this at a real shared filesystem path.
-lock_dir="${3:-/tmp}"
+# Third arg is the lock directory. Precedence: an explicit 3rd arg wins;
+# otherwise a nested CLI call inherits the outer lock-dir from the exported
+# LOCAL_MUTEX_LOCK_DIR (so a GC/reconcile loop taking per-item locks stays in
+# one lock domain without threading the path through every call); otherwise
+# the /tmp default. An empty-string 3rd arg is treated as unset, matching the
+# action.yml surface where `lock-dir` is an optional empty-string input.
+# Callers on self-hosted runners with a non-shared /tmp (containerized
+# runners, chrooted sandboxes, or anywhere /tmp doesn't see across sibling
+# runners) point this at a real shared filesystem path.
+lock_dir="${3:-}"
+if [ -z "$lock_dir" ]; then
+    lock_dir="${LOCAL_MUTEX_LOCK_DIR:-/tmp}"
+fi
 
 # Reject empty/whitespace-only inputs early. Both produce useless lock files
 # and silent no-ops downstream, which is the worst possible failure mode for
@@ -163,6 +169,36 @@ if [ ! -w "$lock_dir" ]; then
 fi
 
 lockfile="${lock_dir}/local-mutex-${name_hash}.lock"
+
+# Expose to the wrapped command what it needs to take further per-item locks
+# from a shell loop (a GC sweep over N cache keys, a reconcile loop over N
+# shared dirs — work a composite action's steps can't iterate):
+#   LOCAL_MUTEX_LOCK_DIR — the resolved lock directory, so a nested CLI call
+#     with no 3rd arg lands in the SAME lock domain as this one. Without it a
+#     loop under a non-/tmp lock-dir would silently drop to /tmp and stop
+#     serializing against the writers — a silent no-op, the worst mutex
+#     failure. Exported after validation, so it is always a usable directory.
+#   LOCAL_MUTEX_CLI — this script's own absolute path, so the loop re-invokes
+#     the same lock primitive instead of hardcoding a checkout layout or
+#     re-implementing the lockf/flock probe. Resolved from $0 with parameter
+#     expansion and the cd/pwd builtins only — no dirname/basename — so it
+#     adds no external-command dependency and keeps working under the locked-
+#     down PATH the "missing lock binary" test exercises.
+# Both are exported before the exec so they survive into that environment.
+#
+# CLI resolution is fail-soft: a failed cd under set -e would abort the whole
+# script, so on failure we skip the export rather than let this convenience
+# gate the primary contract of running the command under the lock.
+LOCAL_MUTEX_LOCK_DIR="$lock_dir"
+export LOCAL_MUTEX_LOCK_DIR
+case "$0" in
+    */*) mutex_self_dir=${0%/*} ;;
+    *) mutex_self_dir=. ;;
+esac
+if mutex_self_abs=$(CDPATH='' cd -- "$mutex_self_dir" 2>/dev/null && pwd); then
+    LOCAL_MUTEX_CLI="${mutex_self_abs}/${0##*/}"
+    export LOCAL_MUTEX_CLI
+fi
 
 # Emit a diagnostic notice before and after the lock acquire so callers
 # debugging a hung step can see what the step is blocked on and when it
