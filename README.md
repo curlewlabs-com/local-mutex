@@ -132,6 +132,41 @@ If your inner command writes to `$GITHUB_OUTPUT` and you need those values in la
   run: echo "Built ${{ steps.build.outputs.build-hash }}"
 ```
 
+## Taking locks from a shell loop
+
+The composite action wraps **one** command in **one** lock — the right shape for a workflow step, but not for a job that has to lock many resources it only discovers at runtime: a garbage collector sweeping N cache keys, a reconcile loop over N shared directories. A composite action's steps can't iterate a runtime-computed set, so those callers take each per-item lock from inside a shell loop by invoking the lock script directly.
+
+Every command run through `local-mutex` gets two variables in its environment: `LOCAL_MUTEX_CLI` (the absolute path to this lock script) and `LOCAL_MUTEX_LOCK_DIR` (the resolved lock directory). The script takes the same arguments as the action and gives the same guarantee — the command runs under the named lock, released when it exits, including on `SIGKILL`:
+
+```sh
+sh "$LOCAL_MUTEX_CLI" <name> <command> [lock-dir]
+```
+
+Omit `[lock-dir]` in a nested call and it inherits `LOCAL_MUTEX_LOCK_DIR` — the outer lock's directory — so the whole loop stays in one lock domain without threading the path through every call.
+
+So a sweep wraps itself in one outer lock via the action, then takes a per-item lock for each unit of work inside the loop:
+
+```yaml
+- name: Garbage-collect the shared cache
+  uses: curlewlabs-com/local-mutex@v2
+  with:
+    name: cache-gc                       # one outer lock: one sweep at a time
+    run: |
+      list_cold_keys | while IFS= read -r key; do
+        # Each reclaim runs under the SAME per-key lock the writers hold, so
+        # it can never race a concurrent write of that key. Pass the item
+        # through the environment rather than string-interpolating it into
+        # the command, which runs in a fresh `sh -c`.
+        CACHE_KEY="$key" sh "$LOCAL_MUTEX_CLI" "cache-save-$key" 'reclaim "$CACHE_KEY"'
+      done
+```
+
+The per-item lock shares the action's lock domain: a lock taken via the script with `name: foo` serializes against a `uses: curlewlabs-com/local-mutex` step using `name: foo` **and the same `lock-dir`**, because both hash `foo` to the same lockfile. Nested calls inherit the outer `lock-dir` automatically through `LOCAL_MUTEX_LOCK_DIR`, so a loop stays in one domain even under a custom `lock-dir` — you never thread it through each call. That is what lets a cleanup loop serialize against the very writers it is cleaning up after — the reason to reuse this lock instead of rolling a second one.
+
+Keep the **wrap-a-command** shape; there is deliberately no `lock` / `unlock` pair. Binding the lock to the wrapped command's process is what makes it un-leakable — a caller cannot acquire and then forget to release, or die still holding it. The loop pays one short-lived `sh` per item, which is nothing beside the work being serialized.
+
+Nesting is fine as long as the names differ (an outer `cache-gc` lock around inner `cache-save-<key>` locks). Nesting the **same** name deadlocks — the lock is not reentrant.
+
 ## Diagnostic notices
 
 The action emits two [GitHub Actions `::notice::` annotations](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-a-notice-message) to stderr around each lock acquire:

@@ -91,6 +91,7 @@ jobs:
             printf 'H_T_CUSTOM_DIR=%s\n'     "$(h t-custom-dir)"
             printf 'H_T_EMPTY_LD=%s\n'       "$(h t-empty-ld)"
             printf 'H_T_ACTION_LOCKDIR=%s\n' "$(h t-action-lockdir)"
+            printf 'H_T_INHERIT_INNER=%s\n'  "$(h t-inherit-inner)"
           } >> "$GITHUB_ENV"
 
       # ─── Sanity ──────────────────────────────────────────────────────────
@@ -800,6 +801,78 @@ jobs:
           run: |
             [ "$CUSTOM_TEST_VAR" = "expected-value" ] \
               || (echo "Expected CUSTOM_TEST_VAR=expected-value, got: $CUSTOM_TEST_VAR" && exit 1)
+
+      # ─── Script CLI for loop callers ─────────────────────────────────────
+      # local-mutex exports LOCAL_MUTEX_CLI (its own script path) into the
+      # wrapped command's environment so batch/GC callers can take per-item
+      # locks from inside a shell loop by re-invoking the same CLI. Both
+      # tests run through the action (uses: ./), so they exercise the full
+      # chain — action.yml → local-mutex.sh → export → exec lockf/flock →
+      # sh -c → wrapped command — on both lock primitives via the OS matrix.
+      # Same-name serialization itself is already covered by the concurrency
+      # tests above; the CLI those tests invoke is the very script this env
+      # var points at.
+
+      - name: LOCAL_MUTEX_CLI is exported and re-invocable
+        uses: ./
+        with:
+          name: t-cli-env
+          run: |
+            # local-mutex runs this under `sh -c` and deliberately does not
+            # impose set -e, so opt in — otherwise a non-final failed
+            # assertion wouldn't fail the step. sh, so no pipefail.
+            set -eu
+            [ -n "$LOCAL_MUTEX_CLI" ] \
+              || (echo "Expected LOCAL_MUTEX_CLI to be set" && exit 1)
+            [ -f "$LOCAL_MUTEX_CLI" ] \
+              || (echo "Expected LOCAL_MUTEX_CLI to point at a file, got: $LOCAL_MUTEX_CLI" && exit 1)
+            # Re-invoke the CLI it points at to take a nested lock under a
+            # DIFFERENT name. Must run the inner command and must not
+            # deadlock (different name → different lockfile). The script's
+            # ::notice:: lines go to stderr, so stdout is just the command's.
+            out=$(sh "$LOCAL_MUTEX_CLI" t-cli-env-inner 'echo nested-ok')
+            [ "$out" = "nested-ok" ] \
+              || (echo "Nested CLI invocation did not run cleanly, got: $out" && exit 1)
+
+      - name: Per-item locks in a loop under an outer lock
+        uses: ./
+        with:
+          name: t-loop-outer
+          run: |
+            # See the note above: opt into set -eu so the assertion isn't
+            # masked by the trailing cleanup's exit 0.
+            set -eu
+            rm -f /tmp/lmx-loop-log
+            # The documented GC pattern: an outer lock wraps a sweep that
+            # takes a per-item lock for each unit of work. Distinct item
+            # names must not deadlock under the outer lock, and every item
+            # must run exactly once.
+            for i in 1 2 3; do
+              sh "$LOCAL_MUTEX_CLI" "t-loop-item-$i" "printf 'item-%s\n' '$i' >> /tmp/lmx-loop-log"
+            done
+            lines=$(wc -l < /tmp/lmx-loop-log | tr -d ' ')
+            [ "$lines" = "3" ] \
+              || (echo "Expected 3 items swept, got $lines" && cat /tmp/lmx-loop-log && exit 1)
+            rm -f /tmp/lmx-loop-log
+
+      - name: Nested CLI call inherits the outer lock-dir
+        uses: ./
+        env:
+          EXPECTED_LOCK_DIR: ${{ runner.temp }}
+        with:
+          name: t-inherit-outer
+          lock-dir: ${{ runner.temp }}
+          run: |
+            set -eu
+            # Under a custom lock-dir, a nested CLI call with no 3rd arg must
+            # land in the SAME lock-dir via the exported LOCAL_MUTEX_LOCK_DIR,
+            # not fall back to /tmp — otherwise a loop under a custom lock-dir
+            # would silently stop serializing with the writers.
+            [ "$LOCAL_MUTEX_LOCK_DIR" = "$EXPECTED_LOCK_DIR" ] \
+              || (echo "Expected LOCAL_MUTEX_LOCK_DIR=$EXPECTED_LOCK_DIR, got: $LOCAL_MUTEX_LOCK_DIR" && exit 1)
+            sh "$LOCAL_MUTEX_CLI" t-inherit-inner 'true'
+            test -e "$EXPECTED_LOCK_DIR/local-mutex-$H_T_INHERIT_INNER.lock" \
+              || (echo "Inner lock did not land in inherited lock-dir $EXPECTED_LOCK_DIR" && exit 1)
 
       # Test the output-file passthrough: inner command writes to
       # GITHUB_OUTPUT, caller reads the file to propagate them.
