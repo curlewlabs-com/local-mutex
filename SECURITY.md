@@ -3,7 +3,8 @@
 ## Reporting a Vulnerability
 
 If you discover a security vulnerability in this project, please report it
-privately via [GitHub's security advisory feature](https://github.com/curlewlabs-com/local-mutex/security/advisories/new).
+privately via
+[GitHub's security advisory feature](https://github.com/curlewlabs-com/local-mutex/security/advisories/new).
 
 Do not open a public issue for security vulnerabilities.
 
