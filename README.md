@@ -372,7 +372,8 @@ regardless of machine.
 ## Requirements
 
 - Self-hosted GitHub Actions runner on Linux, macOS, or any BSD that ships
-  `lockf(1)`.
+  `lockf(1)`. A Linux runner inside **WSL2** counts as Linux and is fully
+  supported — it is how to run `local-mutex` on a Windows host.
 - One of `lockf(1)` or `flock(1)` on `PATH`. Both are standard:
   - **macOS:** `lockf` is at `/usr/bin/lockf` on every install (BSD heritage).
   - **Linux:** `flock` is in `util-linux`, installed by default on every modern
@@ -387,6 +388,10 @@ regardless of machine.
   pointing at a bind-mounted host path. If no directory is shared between the
   runners you want to coordinate, a local mutex can't help — use a distributed
   lock instead.
+
+**Windows runners are not supported.** GitHub Actions offers `shell: sh` on
+Linux and macOS only, and neither Windows nor Git for Windows ships a `lockf`
+or `flock` command for the probe to find. Run the runner inside WSL2 instead.
 
 GitHub-hosted runners (`ubuntu-latest`, `macos-latest`) also work — they have
 the binaries — but the use case doesn't apply because GitHub-hosted runners are
