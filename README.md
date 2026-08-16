@@ -288,6 +288,18 @@ Orphaned descendants of the wrapped command continue to exist as reparented
 processes but no longer hold the lock; that matches normal Unix process
 semantics.
 
+**Why hand the primitive a command instead of a descriptor?** Both `lockf` and
+`flock` can instead take a bare file descriptor and leave the caller holding
+the lock. Avoid that form — it is also the expensive one. Given a file and a
+command, macOS `lockf(1)` takes the lock inside `open(..., O_EXLOCK)`, so a
+blocked waiter sleeps in the kernel at 0% CPU. Given only a descriptor it has
+nothing left to open and falls back to a `flock(fd, LOCK_EX|LOCK_NB)` retry
+loop with no sleep in it, so one waiter burns 100% of a core for the whole
+wait — on a contended self-hosted runner, precisely the resource the mutex
+exists to protect. Neither man page mentions this, and every other property
+survives the switch, so CI asserts it directly: a blocked waiter must burn
+under a second of CPU while waiting six.
+
 **Why probe instead of branching on `uname`?** Probing for the actual binary
 handles edge cases without an OS allowlist: a Linux user with `lockf` from a
 non-default package works; a macOS user with `flock` from Homebrew works;

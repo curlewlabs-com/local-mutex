@@ -77,6 +77,7 @@ jobs:
             printf 'H_T_STDIO=%s\n'          "$(h t-stdio)"
             printf 'H_CONC_2=%s\n'           "$(h conc-2)"
             printf 'H_STRESS_20=%s\n'        "$(h stress-20)"
+            printf 'H_CPU_WAIT=%s\n'         "$(h cpu-wait)"
             printf 'H_NAME_A=%s\n'           "$(h name-a)"
             printf 'H_NAME_B=%s\n'           "$(h name-b)"
             printf 'H_KILL_TEST=%s\n'        "$(h kill-test)"
@@ -313,6 +314,80 @@ jobs:
 
           rm -f /tmp/stress-log "/tmp/local-mutex-${H_STRESS_20}.lock"
           echo "Stress 20 concurrent: OK"
+
+      - name: A blocked waiter sleeps rather than spinning
+        run: |
+          # Guards the CPU cost of waiting, which the header of
+          # lib/local-mutex.sh explains is a property of handing the
+          # primitive a command rather than a descriptor. A rewrite onto the
+          # descriptor form would keep every other assertion in this file
+          # green — correct serialization, correct exit codes, correct
+          # release — while burning a full core per waiter on macOS. Nothing
+          # else here would notice, and on a self-hosted runner with several
+          # callers contending that is the whole cost of the mutex.
+          #
+          # The matrix runs both OSes on every push, so the macOS branch is
+          # always exercised rather than sampled.
+          holder_marker=/tmp/cpu-wait-holder-in
+          rm -f "$holder_marker" "/tmp/local-mutex-${H_CPU_WAIT}.lock"
+
+          hold_seconds=6
+
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh cpu-wait \
+            "touch $holder_marker; sleep $hold_seconds" &
+          holder_pid=$!
+
+          # Wait for the holder to be INSIDE its critical section, observed
+          # via the marker its wrapped command touches, rather than allowing
+          # a fixed margin. A margin that a loaded runner overruns would let
+          # the waiter below start uncontended, and an uncontended acquire
+          # measures nothing.
+          deadline=$(($(date +%s) + 30))
+          while [ ! -e "$holder_marker" ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "holder never entered its critical section"
+              exit 1
+            fi
+            sleep 0.1
+          done
+
+          # `times` reports this shell's children plus everything they waited
+          # for, which is where a spinning primitive's CPU lands, so it has to
+          # run in the same subshell that ran the waiter. The exit status
+          # rides out on the first line: a waiter that never acquired burns
+          # no CPU either, so the CPU figure means nothing on its own.
+          report=$(
+            (
+              rc=0
+              sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh cpu-wait true \
+                >/dev/null 2>&1 || rc=$?
+              echo "$rc"
+              times
+            ) | awk 'NR == 1 { rc = $0 }
+                     END { gsub(/[ms]/, " ")
+                           print rc, ($1 * 60) + $2 + ($3 * 60) + $4 }'
+          )
+          wait "$holder_pid"
+
+          waiter_rc=${report%% *}
+          waiter_cpu=${report##* }
+
+          if [ "$waiter_rc" != "0" ]; then
+            echo "waiter never acquired: rc=$waiter_rc"
+            exit 1
+          fi
+
+          # Two orders of magnitude of headroom: a sleeping wait costs
+          # milliseconds, a spin costs about one CPU-second per wall second.
+          if ! awk -v cpu="$waiter_cpu" \
+                 'BEGIN { exit !(cpu != "" && cpu < 1) }'; then
+            echo "waiter burned '${waiter_cpu}'s of CPU over a ${hold_seconds}s"
+            echo "wait — the wait is spinning, not sleeping"
+            exit 1
+          fi
+
+          rm -f "$holder_marker" "/tmp/local-mutex-${H_CPU_WAIT}.lock"
+          echo "Blocked waiter sleeps: OK (${waiter_cpu}s CPU over ${hold_seconds}s)"
 
       - name: Different names don't block each other
         run: |

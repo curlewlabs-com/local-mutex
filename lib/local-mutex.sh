@@ -14,6 +14,22 @@
 # reparented processes but no longer hold the lock; that is intentional
 # and matches normal Unix process semantics.
 #
+# Command-wrapping is also the only mode that waits cheaply, which is not
+# a documented property of either primitive. Handed a file AND a command,
+# macOS lockf(1) takes the lock inside `open(..., O_EXLOCK)`, so a blocked
+# waiter sleeps in the kernel at 0% CPU. Handed a bare descriptor instead
+# — its other mode — it has nothing left to open and falls back to
+# `flock(fd, LOCK_EX|LOCK_NB)` in a retry loop with no sleep in it, and a
+# waiter burns 100% of a core for the whole wait. That is by construction,
+# not a tuning accident: the binary contains no nanosleep/usleep/poll/
+# select at all. The man page says the opposite if anything, crediting the
+# `-k` that descriptor mode implies with "an algorithm which minimizes CPU
+# load". Nothing here needs a descriptor, because that mode only becomes
+# necessary when a caller must release partway through the wrapped command
+# — so if that requirement ever arrives, budget for a sleep-poll around
+# the non-blocking form rather than reaching for the descriptor and
+# letting the primitive wait.
+#
 # Critical flag: `flock -o` is required so the flock parent closes the
 # lock FD before exec. Without it, the wrapped command's descendants
 # inherit the FD and the lock isn't released until they all exit, which
