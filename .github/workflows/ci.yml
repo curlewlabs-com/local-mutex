@@ -49,7 +49,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Custom job-level env var used by the "job-level env propagates" test
     # below. Defining it here (rather than on a single step) is the whole
-    # point of the test — it proves values set at job scope reach the
+    # point of the test - it proves values set at job scope reach the
     # wrapped command.
     env:
       CUSTOM_TEST_VAR: expected-value
@@ -95,7 +95,7 @@ jobs:
             printf 'H_T_INHERIT_INNER=%s\n'  "$(h t-inherit-inner)"
           } >> "$GITHUB_ENV"
 
-      # ─── Sanity ──────────────────────────────────────────────────────────
+      # --- Sanity ----------------------------------------------------------
 
       - name: Single invocation succeeds
         uses: ./
@@ -144,7 +144,7 @@ jobs:
       # would silently abort wrapped scripts on the first failed command,
       # which is a behavior change callers would not expect. The test runs
       # `false` followed by a marker write and asserts both the step
-      # succeeds AND the marker exists — proving the default shell kept
+      # succeeds AND the marker exists - proving the default shell kept
       # running past the failing command.
       - name: Wrapper does not impose set -e by default
         uses: ./
@@ -158,7 +158,7 @@ jobs:
       - name: Verify default-no-set-e marker exists
         run: |
           test -f /tmp/no-set-e-marker \
-            || (echo "Expected marker file — wrapper must not impose set -e" && exit 1)
+            || (echo "Expected marker file - wrapper must not impose set -e" && exit 1)
           content=$(cat /tmp/no-set-e-marker)
           [ "$content" = "ok" ] \
             || (echo "Expected marker content 'ok', got: $content" && exit 1)
@@ -203,7 +203,7 @@ jobs:
                 "/tmp/local-mutex-${H_T_STDIO}.lock"
           echo "stdout/stderr separation: OK"
 
-      # ─── Concurrency: the central feature ────────────────────────────────
+      # --- Concurrency: the central feature --------------------------------
 
       - name: Two concurrent same-name acquires serialize
         run: |
@@ -218,7 +218,7 @@ jobs:
           # less than or equal to the later caller's start-time (plus a
           # small jitter tolerance). We assert this non-interleave
           # property rather than a specific completion order so the test
-          # is insensitive to scheduling jitter under CI load — we don't
+          # is insensitive to scheduling jitter under CI load - we don't
           # care WHICH caller goes first, only that they don't overlap.
           #
           # Timestamps come from `python3 -c 'print(time.time_ns())'`
@@ -247,7 +247,7 @@ jobs:
 
           # Determine which caller ran first and assert the earlier one's
           # end-time is <= the later one's start-time (plus jitter
-          # tolerance). Either ordering is acceptable — we are testing
+          # tolerance). Either ordering is acceptable - we are testing
           # mutual exclusion, not fairness.
           if [ "$s1" -le "$s2" ]; then
             earlier_end=$e1
@@ -270,7 +270,7 @@ jobs:
                 "/tmp/local-mutex-${H_CONC_2}.lock"
           echo "Concurrent same-name serialization: OK (order: $order)"
 
-      - name: Stress — 20 concurrent acquires of the same name
+      - name: Stress - 20 concurrent acquires of the same name
         run: |
           rm -f /tmp/stress-log "/tmp/local-mutex-${H_STRESS_20}.lock"
 
@@ -321,8 +321,8 @@ jobs:
           # lib/local-mutex.sh explains is a property of handing the
           # primitive a command rather than a descriptor. A rewrite onto the
           # descriptor form would keep every other assertion in this file
-          # green — correct serialization, correct exit codes, correct
-          # release — while burning a full core per waiter on macOS. Nothing
+          # green - correct serialization, correct exit codes, correct
+          # release - while burning a full core per waiter on macOS. Nothing
           # else here would notice, and on a self-hosted runner with several
           # callers contending that is the whole cost of the mutex.
           #
@@ -382,7 +382,7 @@ jobs:
           if ! awk -v cpu="$waiter_cpu" \
                  'BEGIN { exit !(cpu != "" && cpu < 1) }'; then
             echo "waiter burned '${waiter_cpu}'s of CPU over a ${hold_seconds}s"
-            echo "wait — the wait is spinning, not sleeping"
+            echo "wait - the wait is spinning, not sleeping"
             exit 1
           fi
 
@@ -398,9 +398,9 @@ jobs:
           # the parallel-vs-serial gap is wide enough that integer-second
           # `date +%s` rounding can't mask a regression. Bound is `-le 4`
           # (parallel run can be 3 or 4 depending on second-boundary timing,
-          # serial run would be 6 or 7 — easily distinguished).
+          # serial run would be 6 or 7 - easily distinguished).
           start=$(date +%s)
-          # parallel ≈ 3s, serial ≈ 6s, so an upper bound of 4s catches
+          # parallel ~ 3s, serial ~ 6s, so an upper bound of 4s catches
           # regressions while tolerating runner jitter.
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh name-a 'sleep 3' &
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh name-b 'sleep 3' &
@@ -409,7 +409,7 @@ jobs:
           elapsed=$((end - start))
 
           [ "$elapsed" -le 4 ] \
-            || (echo "Expected ~3s parallel, got ${elapsed}s — likely blocking on shared lock" && exit 1)
+            || (echo "Expected ~3s parallel, got ${elapsed}s - likely blocking on shared lock" && exit 1)
 
           rm -f "/tmp/local-mutex-${H_NAME_A}.lock" "/tmp/local-mutex-${H_NAME_B}.lock"
           echo "Different names parallel: OK (${elapsed}s)"
@@ -429,7 +429,7 @@ jobs:
           sleep 0.5
 
           # SIGKILL the holder. The kernel should release the lock as part
-          # of process teardown — flock releases on FD close, lockf on
+          # of process teardown - flock releases on FD close, lockf on
           # process exit. Either way, no waiting required.
           kill -9 "$holder_pid" 2>/dev/null
           wait 2>/dev/null
@@ -442,7 +442,7 @@ jobs:
           elapsed=$((end - start))
 
           [ "$elapsed" -le 1 ] \
-            || (echo "Auto-release after SIGKILL took ${elapsed}s — too slow, kernel cleanup may not be working" && exit 1)
+            || (echo "Auto-release after SIGKILL took ${elapsed}s - too slow, kernel cleanup may not be working" && exit 1)
 
           rm -f "/tmp/local-mutex-${H_KILL_TEST}.lock"
           echo "SIGKILL auto-release: OK"
@@ -455,7 +455,7 @@ jobs:
           holder_pid=$!
           sleep 0.5
 
-          # SIGTERM is the polite kill — the shell may run traps, then exit.
+          # SIGTERM is the polite kill - the shell may run traps, then exit.
           # The kernel still releases the lock on process exit either way.
           kill -TERM "$holder_pid" 2>/dev/null
           wait 2>/dev/null
@@ -466,7 +466,7 @@ jobs:
           elapsed=$((end - start))
 
           [ "$elapsed" -le 1 ] \
-            || (echo "Auto-release after SIGTERM took ${elapsed}s — too slow" && exit 1)
+            || (echo "Auto-release after SIGTERM took ${elapsed}s - too slow" && exit 1)
 
           rm -f "/tmp/local-mutex-${H_TERM_TEST}.lock"
           echo "SIGTERM auto-release: OK"
@@ -475,7 +475,7 @@ jobs:
         run: |
           rm -f "/tmp/local-mutex-${H_SEQ_TEST}.lock"
 
-          # Acquire, release (normal exit), reacquire — should be instant.
+          # Acquire, release (normal exit), reacquire - should be instant.
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh seq-test 'true'
           start=$(date +%s)
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh seq-test 'true'
@@ -483,12 +483,12 @@ jobs:
           elapsed=$((end - start))
 
           [ "$elapsed" -le 1 ] \
-            || (echo "Sequential reacquire took ${elapsed}s — lock may not be releasing" && exit 1)
+            || (echo "Sequential reacquire took ${elapsed}s - lock may not be releasing" && exit 1)
 
           rm -f "/tmp/local-mutex-${H_SEQ_TEST}.lock"
           echo "Sequential normal-exit reacquire: OK"
 
-      # ─── Robustness ──────────────────────────────────────────────────────
+      # --- Robustness ------------------------------------------------------
 
       - name: Empty name input fails clean
         id: empty-name
@@ -553,7 +553,7 @@ jobs:
           # Invoke the script directly with one argument to exercise the
           # `$# -lt 2` branch. The composite action always passes two or
           # three inputs, so this path can only be reached by direct
-          # invocation — we test it explicitly because the script has
+          # invocation - we test it explicitly because the script has
           # dedicated rejection logic for it.
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh only-one-arg 2>/tmp/argc-err
 
@@ -658,7 +658,7 @@ jobs:
       # distinct locks.
       - name: Very long name produces a fixed-length basename
         run: |
-          # 1000 'a's — well past the old 200-char truncation point.
+          # 1000 'a's - well past the old 200-char truncation point.
           long_name=$(printf 'a%.0s' $(seq 1 1000))
           if command -v sha256sum >/dev/null 2>&1; then
             expected_hash=$(printf '%s' "$long_name" | sha256sum | cut -d' ' -f1)
@@ -674,7 +674,7 @@ jobs:
             || (echo "Expected lockfile not found at /tmp/$expected_basename" && exit 1)
 
           rm -f "/tmp/$expected_basename"
-          echo "Very long name: OK (${#long_name}-char input → 64-hex basename)"
+          echo "Very long name: OK (${#long_name}-char input -> 64-hex basename)"
 
       # Two long names that differ only in their last character previously
       # collapsed to the same lock because tr-sanitized basenames were
@@ -705,10 +705,10 @@ jobs:
           end=$(date +%s)
           elapsed=$((end - start))
 
-          # parallel ≈ 3s, serialized-because-collided ≈ 6s. Upper bound
+          # parallel ~ 3s, serialized-because-collided ~ 6s. Upper bound
           # 4s catches the regression while tolerating CI jitter.
           [ "$elapsed" -le 4 ] \
-            || (echo "Expected ~3s parallel (distinct hashes), got ${elapsed}s — hashing may be collapsing long names" && exit 1)
+            || (echo "Expected ~3s parallel (distinct hashes), got ${elapsed}s - hashing may be collapsing long names" && exit 1)
 
           # Both lockfiles should exist and be distinct.
           test -f "/tmp/local-mutex-${hash_a}.lock" \
@@ -739,7 +739,7 @@ jobs:
       # Names containing newlines would split the ::notice:: annotation
       # into two lines, and the runner's log parser could then re-interpret
       # the second line as a workflow command. The script rejects any name
-      # containing ASCII control characters (byte 0x00–0x1F or 0x7F) up
+      # containing ASCII control characters (byte 0x00-0x1F or 0x7F) up
       # front with exit 2 and a clear ::error:: annotation.
       - name: Newline in name is rejected
         id: newline-name
@@ -757,7 +757,7 @@ jobs:
           rm -f /tmp/newline-err
           echo "Newline name rejection: OK"
 
-      # Symmetric test for non-newline control chars — tab is the most
+      # Symmetric test for non-newline control chars - tab is the most
       # common one likely to sneak in via indentation or copy-paste. The
       # rejection logic is a single case pattern, so catching any control
       # char proves the whole class is rejected; a tab-specific test
@@ -786,7 +786,7 @@ jobs:
       #
       # Use /bin/sh explicitly to match action.yml's `shell: sh`, so the
       # test exercises the same interpreter the action will use in
-      # production. Don't symlink sh into the fake PATH — /bin/sh is the
+      # production. Don't symlink sh into the fake PATH - /bin/sh is the
       # canonical interpreter location and using it directly makes the
       # test intent unambiguous.
       #
@@ -851,7 +851,7 @@ jobs:
           rm -f /tmp/err
           echo "Missing SHA-256 tool error: OK"
 
-      # ─── Caller environment propagation ──────────────────────────────────
+      # --- Caller environment propagation ----------------------------------
 
       - name: Step-level env is visible inside run
         uses: ./
@@ -877,13 +877,13 @@ jobs:
             [ "$CUSTOM_TEST_VAR" = "expected-value" ] \
               || (echo "Expected CUSTOM_TEST_VAR=expected-value, got: $CUSTOM_TEST_VAR" && exit 1)
 
-      # ─── Script CLI for loop callers ─────────────────────────────────────
+      # --- Script CLI for loop callers -------------------------------------
       # local-mutex exports LOCAL_MUTEX_CLI (its own script path) into the
       # wrapped command's environment so batch/GC callers can take per-item
       # locks from inside a shell loop by re-invoking the same CLI. Both
       # tests run through the action (uses: ./), so they exercise the full
-      # chain — action.yml → local-mutex.sh → export → exec lockf/flock →
-      # sh -c → wrapped command — on both lock primitives via the OS matrix.
+      # chain - action.yml -> local-mutex.sh -> export -> exec lockf/flock ->
+      # sh -c -> wrapped command - on both lock primitives via the OS matrix.
       # Same-name serialization itself is already covered by the concurrency
       # tests above; the CLI those tests invoke is the very script this env
       # var points at.
@@ -894,7 +894,7 @@ jobs:
           name: t-cli-env
           run: |
             # local-mutex runs this under `sh -c` and deliberately does not
-            # impose set -e, so opt in — otherwise a non-final failed
+            # impose set -e, so opt in - otherwise a non-final failed
             # assertion wouldn't fail the step. sh, so no pipefail.
             set -eu
             [ -n "$LOCAL_MUTEX_CLI" ] \
@@ -903,7 +903,7 @@ jobs:
               || (echo "Expected LOCAL_MUTEX_CLI to point at a file, got: $LOCAL_MUTEX_CLI" && exit 1)
             # Re-invoke the CLI it points at to take a nested lock under a
             # DIFFERENT name. Must run the inner command and must not
-            # deadlock (different name → different lockfile). The script's
+            # deadlock (different name -> different lockfile). The script's
             # ::notice:: lines go to stderr, so stdout is just the command's.
             out=$(sh "$LOCAL_MUTEX_CLI" t-cli-env-inner 'echo nested-ok')
             [ "$out" = "nested-ok" ] \
@@ -941,7 +941,7 @@ jobs:
             set -eu
             # Under a custom lock-dir, a nested CLI call with no 3rd arg must
             # land in the SAME lock-dir via the exported LOCAL_MUTEX_LOCK_DIR,
-            # not fall back to /tmp — otherwise a loop under a custom lock-dir
+            # not fall back to /tmp - otherwise a loop under a custom lock-dir
             # would silently stop serializing with the writers.
             [ "$LOCAL_MUTEX_LOCK_DIR" = "$EXPECTED_LOCK_DIR" ] \
               || (echo "Expected LOCAL_MUTEX_LOCK_DIR=$EXPECTED_LOCK_DIR, got: $LOCAL_MUTEX_LOCK_DIR" && exit 1)
@@ -999,12 +999,12 @@ jobs:
             [ "$actual" = "$expected" ] \
               || (echo "Expected pwd=$expected, got $actual" && exit 1)
 
-      # ─── Diagnostic notices ──────────────────────────────────────────────
+      # --- Diagnostic notices ----------------------------------------------
 
       # Both bookend notices must reach stderr so callers debugging a hung
       # step can see what the step is blocked on and when it cleared.
       # Invoked via direct script call so stderr can be captured to a file
-      # and grep'd — the `uses: ./` path sends notices to the job log
+      # and grep'd - the `uses: ./` path sends notices to the job log
       # where they aren't easily read back within the same job.
       #
       # The timestamp pattern is `YYYY-MM-DDTHH:MM:SSZ` (UTC). The regex
@@ -1025,7 +1025,7 @@ jobs:
           echo "Diagnostic notices on success: OK"
 
       # The release notice must fire even when the wrapped command exits
-      # non-zero — a diagnostic bookend that only appears on success is
+      # non-zero - a diagnostic bookend that only appears on success is
       # useless precisely when debugging failures, which is when it
       # matters most.
       - name: Release notice fires when wrapped command fails
@@ -1048,7 +1048,7 @@ jobs:
       # If the caller installs their own EXIT trap, POSIX sh replaces our
       # trap with theirs. The contract: caller's trap still runs
       # correctly; our release notice is suppressed. This test proves
-      # both halves — the caller's marker is written, and our release
+      # both halves - the caller's marker is written, and our release
       # notice does NOT appear in stderr.
       - name: Caller EXIT trap overrides release notice
         run: |
@@ -1075,7 +1075,7 @@ jobs:
           rm -f "/tmp/local-mutex-${H_T_DIAG_TRAP}.lock" /tmp/diag-trap-stderr /tmp/diag-trap-marker
           echo "Caller trap overrides release notice: OK"
 
-      # ─── lock-dir input ──────────────────────────────────────────────────
+      # --- lock-dir input --------------------------------------------------
 
       # Custom lock-dir puts the lock file in the specified directory and
       # NOT in /tmp. The negative-leak assertion catches regressions where
@@ -1147,14 +1147,14 @@ jobs:
           rm -f "/tmp/local-mutex-${H_T_EMPTY_LD}.lock"
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-empty-ld 'true' ''
           test -f "/tmp/local-mutex-${H_T_EMPTY_LD}.lock" \
-            || (echo "Lock file missing at /tmp — empty lock-dir did not default" && exit 1)
+            || (echo "Lock file missing at /tmp - empty lock-dir did not default" && exit 1)
           rm -f "/tmp/local-mutex-${H_T_EMPTY_LD}.lock"
           echo "Empty lock-dir defaults to /tmp: OK"
 
       # Validation: relative paths are rejected. A relative path would
       # resolve against CWD which is not stable across runners/jobs, so
       # two callers with the "same" relative lock-dir could end up with
-      # locks on different inodes — mutex silently breaks.
+      # locks on different inodes - mutex silently breaks.
       - name: Relative lock-dir is rejected
         id: rel-lockdir
         continue-on-error: true
@@ -1213,8 +1213,8 @@ jobs:
           echo "Non-writable lock-dir rejection: OK"
 
       # Through the action interface: setting `lock-dir:` on a `uses: ./`
-      # step must route through action.yml → the script's 3rd positional
-      # arg → the lock-file path. Proves the full plumbing, not just the
+      # step must route through action.yml -> the script's 3rd positional
+      # arg -> the lock-file path. Proves the full plumbing, not just the
       # script's direct-invocation path.
       - name: Prepare custom lock-dir for action-interface test
         run: mkdir -p "$RUNNER_TEMP/action-lockdir"

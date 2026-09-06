@@ -1,15 +1,15 @@
 #!/bin/sh
 # Wrap a command in a local-filesystem mutex. Used to serialize a shared
 # resource across multiple GitHub Actions runners on the same physical
-# machine — for example a tool installation in ~/.local/bin/, a cache
+# machine - for example a tool installation in ~/.local/bin/, a cache
 # directory under /tmp, or any other resource that cannot tolerate
 # concurrent access.
 #
 # Strategy: probe for an OS-native command-wrapping lock primitive in
 # preference order (lockf first, then flock) and exec the chosen one with
 # the user's command. The lock is held by this script's process (the lockf
-# or flock parent). When that process exits — normally, on SIGKILL, OOM
-# kill, or machine reboot — the kernel releases the lock immediately.
+# or flock parent). When that process exits - normally, on SIGKILL, OOM
+# kill, or machine reboot - the kernel releases the lock immediately.
 # Orphaned descendants of the wrapped command continue to exist as
 # reparented processes but no longer hold the lock; that is intentional
 # and matches normal Unix process semantics.
@@ -18,7 +18,7 @@
 # a documented property of either primitive. Handed a file AND a command,
 # macOS lockf(1) takes the lock inside `open(..., O_EXLOCK)`, so a blocked
 # waiter sleeps in the kernel at 0% CPU. Handed a bare descriptor instead
-# — its other mode — it has nothing left to open and falls back to
+# - its other mode - it has nothing left to open and falls back to
 # `flock(fd, LOCK_EX|LOCK_NB)` in a retry loop with no sleep in it, and a
 # waiter burns 100% of a core for the whole wait. That is by construction,
 # not a tuning accident: the binary contains no nanosleep/usleep/poll/
@@ -26,7 +26,7 @@
 # `-k` that descriptor mode implies with "an algorithm which minimizes CPU
 # load". Nothing here needs a descriptor, because that mode only becomes
 # necessary when a caller must release partway through the wrapped command
-# — so if that requirement ever arrives, budget for a sleep-poll around
+# - so if that requirement ever arrives, budget for a sleep-poll around
 # the non-blocking form rather than reaching for the descriptor and
 # letting the primitive wait.
 #
@@ -43,7 +43,7 @@
 #     a uname allowlist.
 #   - Smaller code: no OS table to maintain, no edge cases for FreeBSD vs
 #     OpenBSD vs Darwin.
-#   - The probe IS the OS detection — if `lockf` is on PATH, it works; if
+#   - The probe IS the OS detection - if `lockf` is on PATH, it works; if
 #     `flock` is on PATH, it works; if neither is, we fail fast with a
 #     clear message.
 
@@ -64,7 +64,10 @@ cmd="$2"
 # action.yml surface where `lock-dir` is an optional empty-string input.
 # Callers on self-hosted runners with a non-shared /tmp (containerized
 # runners, chrooted sandboxes, or anywhere /tmp doesn't see across sibling
-# runners) point this at a real shared filesystem path.
+# runners) point this at a real shared filesystem path. Shared through one
+# kernel, that is: the lock is the kernel's, and nothing is promised across
+# a kernel boundary such as a VM-hosted container's. README.md's
+# containerized example has the reasoning.
 lock_dir="${3:-}"
 if [ -z "$lock_dir" ]; then
     lock_dir="${LOCAL_MUTEX_LOCK_DIR:-/tmp}"
@@ -91,13 +94,13 @@ case "$name" in
         ;;
 esac
 
-# Reject names containing control characters (byte 0x00–0x1F or 0x7F).
+# Reject names containing control characters (byte 0x00-0x1F or 0x7F).
 # The raw name is echoed verbatim into ::notice:: annotations below; a
 # newline would split the annotation into two lines and the second line
 # could be re-interpreted as a workflow command by the runner's log
 # parser. Tabs and other control chars are rejected for the same display
-# hygiene reason — names are identifiers, identifiers don't contain
-# control characters. Non-ASCII bytes in the 0x80–0xFF range are not
+# hygiene reason - names are identifiers, identifiers don't contain
+# control characters. Non-ASCII bytes in the 0x80-0xFF range are not
 # covered by this check; they are safe because SHA-256 consumes bytes
 # unchanged and printf %s passes them through without reinterpretation.
 case "$name" in
@@ -122,11 +125,11 @@ esac
 
 # Hash the raw name with SHA-256 to derive the lockfile basename. This
 # replaces the previous tr-based character-class sanitization plus
-# 200-char truncation and removes every class of name→filename hazard
+# 200-char truncation and removes every class of name->filename hazard
 # at once:
 #   - Path traversal ('../../etc/passwd') cannot escape: the basename
 #     is always exactly 64 hex characters plus the 'local-mutex-' prefix
-#     and '.lock' suffix — total 81 bytes, well under NAME_MAX on every
+#     and '.lock' suffix - total 81 bytes, well under NAME_MAX on every
 #     supported filesystem.
 #   - Arbitrary byte sequences including invalid UTF-8 hash cleanly.
 #     Both sha256sum (GNU coreutils) and shasum (Perl) are byte-oriented
@@ -151,9 +154,9 @@ else
     printf '::error::local-mutex: neither sha256sum(1) nor shasum(1) found on PATH. Install coreutils (Linux) or use a system that ships Perl (macOS, *BSD).\n' >&2
     exit 127
 fi
-# Both sha256sum(1) and shasum(1) emit "<hex>  <filename>" (stdin → "-").
+# Both sha256sum(1) and shasum(1) emit "<hex>  <filename>" (stdin -> "-").
 # Strip everything from the first space onward with POSIX parameter
-# expansion so we don't have to depend on cut(1) being on PATH — the
+# expansion so we don't have to depend on cut(1) being on PATH - the
 # "missing lock binary" test exercises a locked-down PATH that only
 # contains sha256sum/shasum, and any extra dependency here would break it.
 name_hash=${name_hash%% *}
@@ -188,16 +191,16 @@ lockfile="${lock_dir}/local-mutex-${name_hash}.lock"
 
 # Expose to the wrapped command what it needs to take further per-item locks
 # from a shell loop (a GC sweep over N cache keys, a reconcile loop over N
-# shared dirs — work a composite action's steps can't iterate):
-#   LOCAL_MUTEX_LOCK_DIR — the resolved lock directory, so a nested CLI call
+# shared dirs - work a composite action's steps can't iterate):
+#   LOCAL_MUTEX_LOCK_DIR - the resolved lock directory, so a nested CLI call
 #     with no 3rd arg lands in the SAME lock domain as this one. Without it a
 #     loop under a non-/tmp lock-dir would silently drop to /tmp and stop
-#     serializing against the writers — a silent no-op, the worst mutex
+#     serializing against the writers - a silent no-op, the worst mutex
 #     failure. Exported after validation, so it is always a usable directory.
-#   LOCAL_MUTEX_CLI — this script's own absolute path, so the loop re-invokes
+#   LOCAL_MUTEX_CLI - this script's own absolute path, so the loop re-invokes
 #     the same lock primitive instead of hardcoding a checkout layout or
 #     re-implementing the lockf/flock probe. Resolved from $0 with parameter
-#     expansion and the cd/pwd builtins only — no dirname/basename — so it
+#     expansion and the cd/pwd builtins only - no dirname/basename - so it
 #     adds no external-command dependency and keeps working under the locked-
 #     down PATH the "missing lock binary" test exercises.
 # Both are exported before the exec so they survive into that environment.
@@ -244,7 +247,7 @@ if command -v lockf >/dev/null 2>&1; then
     # `unlink(2)`s the lock file on release, which lets a fresh acquirer
     # `open(O_CREAT)` a brand-new inode under the same name while a
     # previous waiter is still blocked on the now-anonymous original
-    # inode. Both end up holding locks on different inodes — the mutex
+    # inode. Both end up holding locks on different inodes - the mutex
     # silently breaks. -k skips the unlink so all callers always lock
     # the same inode.
     exec lockf -k "$lockfile" sh -c "$inner_script"
@@ -253,7 +256,7 @@ elif command -v flock >/dev/null 2>&1; then
     # lock file, so the unlink-then-open inode race that lockf needs `-k`
     # to avoid doesn't exist here. -x is exclusive (the default but
     # explicit for clarity). -o (--close) closes the lock FD before exec
-    # so the wrapped command's descendants don't inherit it — without
+    # so the wrapped command's descendants don't inherit it - without
     # this, killing the flock parent leaves orphan processes holding the
     # lock and the SIGKILL release guarantee silently breaks.
     exec flock -o -x "$lockfile" sh -c "$inner_script"
