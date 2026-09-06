@@ -22,14 +22,14 @@ inputs:
     description: >-
       Shell command to execute while holding the lock. Runs under /bin/sh.
       Multi-line scripts are supported. Use `set -e` if you want abort-on-
-      first-failure semantics — the wrapper does not impose them. Empty or
+      first-failure semantics - the wrapper does not impose them. Empty or
       whitespace-only values are rejected.
     required: true
   lock-dir:
     description: >-
       Absolute path to the directory where the lock file is created.
       Defaults to /tmp. Override this only when /tmp is not shared
-      across the runners on the same machine — for example, on
+      across the runners on the same machine - for example, on
       containerized self-hosted runners where /tmp is container-local.
       The directory must exist and be writable by the runner user. The
       lock file basename inside this directory is the SHA-256 of name
@@ -69,8 +69,8 @@ runs:
         export GITHUB_OUTPUT
 
         # Always pass lock-dir as the 3rd positional arg. The script
-        # treats empty string the same as "unset" — both fall back to
-        # the /tmp default — so this single shape works for callers who
+        # treats empty string the same as "unset" - both fall back to
+        # the /tmp default - so this single shape works for callers who
         # set lock-dir and callers who don't.
         rc=0
         sh "$ACTION_PATH/lib/local-mutex.sh" "$INPUT_NAME" "$INPUT_RUN" "$INPUT_LOCK_DIR" || rc=$?

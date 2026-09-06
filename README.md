@@ -10,7 +10,7 @@ each other silently.
 ([`lockf(1)`](https://man.freebsd.org/cgi/man.cgi?lockf(1)) on macOS/BSD,
 [`flock(1)`](https://man7.org/linux/man-pages/man1/flock.1.html) on Linux,
 whichever is on `PATH`). The lock is acquired before your command runs, held
-for the duration, and released automatically when it exits — including on
+for the duration, and released automatically when it exits - including on
 `SIGKILL`, OOM kill, or machine reboot. No external services, no stale-lock
 recovery, no PID tracking.
 
@@ -21,15 +21,15 @@ Self-hosted runners on the same machine sharing the same OS user share `/tmp`,
 to update the same tool at once, or rebuild the same cache entry, they race
 each other.
 
-GitHub Actions' built-in `concurrency:` mechanism doesn't help — it serializes
+GitHub Actions' built-in `concurrency:` mechanism doesn't help - it serializes
 whole jobs (or whole workflows) at the GitHub API level, which is far too
 coarse. If you have multiple runners and want them all running independent jobs
 in parallel except for the one moment they need to update a shared binary,
 `concurrency:` would force you down to one runner total.
 
 Distributed mutex actions (`actions-mutex`, `gh-action-locks`, k8s-lock, etc.)
-all use external coordination — git push contention, GitHub API artifacts, HTTP
-services, k8s secrets — because they assume runners are on different ephemeral
+all use external coordination - git push contention, GitHub API artifacts, HTTP
+services, k8s secrets - because they assume runners are on different ephemeral
 machines. For the same-physical-machine case, that's massive overkill: you're
 emulating over the network something the kernel will do for you in
 microseconds.
@@ -50,7 +50,7 @@ command-locking primitive, exposed as a GitHub composite action.
 ```
 
 That's the entire interface. The lock is acquired before `run:` starts, held
-for the duration, and released when `run:` exits — normally or otherwise. If
+for the duration, and released when `run:` exits - normally or otherwise. If
 another runner is holding the same `name`, this caller waits indefinitely
 (bounded only by the job's `timeout-minutes`).
 
@@ -112,9 +112,9 @@ to `/shared/dep-cache/<hash>/`. Wrapping the build+publish step in
 build script checks whether the entry already exists and exits early when it
 does, the second runner becomes a fast no-op.
 
-[`curlewlabs-com/local-cache`](https://github.com/curlewlabs-com/local-cache) —
+[`curlewlabs-com/local-cache`](https://github.com/curlewlabs-com/local-cache) -
 a sister composite action that provides a local-disk cache for self-hosted
-runners — uses `local-mutex` for exactly this pattern. Its `save/action.yml`
+runners - uses `local-mutex` for exactly this pattern. Its `save/action.yml`
 wraps the per-key write step in `local-mutex` so concurrent saves of the same
 cache key serialize via `lockf`/`flock` instead of needing per-script PID
 tracking and stale-lock recovery. See its
@@ -157,7 +157,7 @@ serialize via the host kernel's lock.
   rejected.
 - **`lock-dir`** (optional): Absolute path to the directory where the lock file
   is created. Defaults to `/tmp`. Override only when `/tmp` isn't shared across
-  the runners on the same machine — for example, on containerized self-hosted
+  the runners on the same machine - for example, on containerized self-hosted
   runners where `/tmp` is container-local. The directory must exist and be
   writable by the runner user. Callers setting the same `name` from two runners
   continue to serialize as long as they share the same `lock-dir`.
@@ -195,7 +195,7 @@ later steps, add a propagation step:
 
 ## Taking locks from a shell loop
 
-The composite action wraps **one** command in **one** lock — the right shape
+The composite action wraps **one** command in **one** lock - the right shape
 for a workflow step, but not for a job that has to lock many resources it only
 discovers at runtime: a garbage collector sweeping N cache keys, a reconcile
 loop over N shared directories. A composite action's steps can't iterate a
@@ -205,15 +205,15 @@ shell loop by invoking the lock script directly.
 Every command run through `local-mutex` gets two variables in its environment:
 `LOCAL_MUTEX_CLI` (the absolute path to this lock script) and
 `LOCAL_MUTEX_LOCK_DIR` (the resolved lock directory). The script takes the same
-arguments as the action and gives the same guarantee — the command runs under
+arguments as the action and gives the same guarantee - the command runs under
 the named lock, released when it exits, including on `SIGKILL`:
 
 ```sh
 sh "$LOCAL_MUTEX_CLI" <name> <command> [lock-dir]
 ```
 
-Omit `[lock-dir]` in a nested call and it inherits `LOCAL_MUTEX_LOCK_DIR` — the
-outer lock's directory — so the whole loop stays in one lock domain without
+Omit `[lock-dir]` in a nested call and it inherits `LOCAL_MUTEX_LOCK_DIR` - the
+outer lock's directory - so the whole loop stays in one lock domain without
 threading the path through every call.
 
 So a sweep wraps itself in one outer lock via the action, then takes a per-item
@@ -239,18 +239,18 @@ with `name: foo` serializes against a `uses: curlewlabs-com/local-mutex` step
 using `name: foo` **and the same `lock-dir`**, because both hash `foo` to the
 same lockfile. Nested calls inherit the outer `lock-dir` automatically through
 `LOCAL_MUTEX_LOCK_DIR`, so a loop stays in one domain even under a custom
-`lock-dir` — you never thread it through each call. That is what lets a cleanup
-loop serialize against the very writers it is cleaning up after — the reason to
+`lock-dir` - you never thread it through each call. That is what lets a cleanup
+loop serialize against the very writers it is cleaning up after - the reason to
 reuse this lock instead of rolling a second one.
 
 Keep the **wrap-a-command** shape; there is deliberately no `lock` / `unlock`
 pair. Binding the lock to the wrapped command's process is what makes it
-un-leakable — a caller cannot acquire and then forget to release, or die still
+un-leakable - a caller cannot acquire and then forget to release, or die still
 holding it. The loop pays one short-lived `sh` per item, which is nothing
 beside the work being serialized.
 
 Nesting is fine as long as the names differ (an outer `cache-gc` lock around
-inner `cache-save-<key>` locks). Nesting the **same** name deadlocks — the lock
+inner `cache-save-<key>` locks). Nesting the **same** name deadlocks - the lock
 is not reentrant.
 
 ## Diagnostic notices
@@ -265,11 +265,11 @@ stderr around each lock acquire:
 
 The wait notice is emitted before handing off to the lock primitive, so a hung
 step shows what it's blocked on. The release notice is emitted after the
-wrapped command exits — on success, on failure, and on signal-driven exits the
+wrapped command exits - on success, on failure, and on signal-driven exits the
 inner shell can trap. Both notices appear in the step log and surface in the
 job summary annotations.
 
-If the wrapped `run` command installs its own `trap '…' EXIT`, POSIX shell
+If the wrapped `run` command installs its own `trap '...' EXIT`, POSIX shell
 replaces our trap with the caller's. The caller's trap still runs correctly;
 only our release notice is suppressed. The wait notice is unaffected.
 
@@ -296,19 +296,19 @@ fi
 
 No timeout flag (the job-level `timeout-minutes` bounds it). No PID tracking.
 No stale-lock recovery. When the process running this script exits, the kernel
-releases the lock — including on `SIGKILL`, OOM kill, or machine reboot.
+releases the lock - including on `SIGKILL`, OOM kill, or machine reboot.
 Orphaned descendants of the wrapped command continue to exist as reparented
 processes but no longer hold the lock; that matches normal Unix process
 semantics.
 
 **Why hand the primitive a command instead of a descriptor?** Both `lockf` and
 `flock` can instead take a bare file descriptor and leave the caller holding
-the lock. Avoid that form — it is also the expensive one. Given a file and a
+the lock. Avoid that form - it is also the expensive one. Given a file and a
 command, macOS `lockf(1)` takes the lock inside `open(..., O_EXLOCK)`, so a
 blocked waiter sleeps in the kernel at 0% CPU. Given only a descriptor it has
 nothing left to open and falls back to a `flock(fd, LOCK_EX|LOCK_NB)` retry
 loop with no sleep in it, so one waiter burns 100% of a core for the whole
-wait — on a contended self-hosted runner, precisely the resource the mutex
+wait - on a contended self-hosted runner, precisely the resource the mutex
 exists to protect. Neither man page mentions this, and every other property
 survives the switch, so CI asserts it directly: a blocked waiter must burn
 under a second of CPU while waiting six.
@@ -326,14 +326,14 @@ an extra flag.
 **Why `lockf -k`?** Without `-k`, lockf `unlink(2)`s the lock file on release.
 That lets a fresh acquirer `open(O_CREAT)` a brand-new inode under the same
 name while a previous waiter is still blocked on the now-anonymous original
-inode — both end up holding locks on different inodes and the mutex silently
+inode - both end up holding locks on different inodes and the mutex silently
 breaks. `-k` skips the unlink so all callers always lock the same inode.
 
 **Why `flock -o -x`?** `-x` is exclusive (the default, but explicit for
 clarity). `-o` (or `--close`) closes the lock file descriptor in the flock
 child before `exec`, so the wrapped command's descendants don't inherit it.
 Without `-o`, killing the flock parent on Linux leaves orphan processes still
-holding the lock — the SIGKILL release guarantee silently breaks. macOS `lockf`
+holding the lock - the SIGKILL release guarantee silently breaks. macOS `lockf`
 doesn't need an equivalent flag because BSD `lockf` already closes the lock FD
 in the forked child before exec.
 
@@ -342,7 +342,7 @@ Adding a per-step timeout would just give callers two ways to specify the same
 thing. If you need a timeout shorter than the job, set `timeout-minutes` on the
 calling step.
 
-## When to use this — and when not to
+## When to use this - and when not to
 
 ### Use it when
 
@@ -358,12 +358,12 @@ calling step.
 
 - **Runners are on different machines.** Local file locks can't coordinate
   across machines. Use GitHub Actions' built-in
-  [`concurrency:`][concurrency-docs] instead — it serializes whole jobs across
+  [`concurrency:`][concurrency-docs] instead - it serializes whole jobs across
   all runners, which is the right granularity when you need cross-machine
   coordination. (Most published "distributed mutex" composite actions are now
   archived and explicitly point users to `concurrency:`.)
 - **You need fairness or FIFO ordering across operating systems.** On Linux
-  (`flock`), acquisition order is not guaranteed — whichever caller the kernel
+  (`flock`), acquisition order is not guaranteed - whichever caller the kernel
   happens to wake up first wins. On macOS/BSD, the `lockf(1)` man page
   documents that `-k` "will guarantee lock ordering," which this action passes.
   If your fleet mixes both OSes, don't design around FIFO; if it's all
@@ -373,7 +373,7 @@ calling step.
 - **You need a lock with a timeout shorter than the job.** Use
   `timeout-minutes` on the calling step instead.
 - **You're trying to serialize work outside the runner machine** (a Cloudflare
-  API call, a database operation, a remote service). The lock is local — it
+  API call, a database operation, a remote service). The lock is local - it
   can't see beyond the runner host's filesystem.
 
 ## Comparison with the alternatives
@@ -383,12 +383,12 @@ calling step.
 | Coordination scope | Same physical machine | GitHub API (cross-machine) |
 | Granularity | Per-step / per-resource | Per-job or per-workflow |
 | Latency to acquire | Microseconds (kernel) | Queues whole jobs (cancels with `cancel-in-progress: true`) |
-| Setup required | None — composite action only | None — built into Actions |
+| Setup required | None - composite action only | None - built into Actions |
 | Stale lock recovery | Automatic (kernel-managed) | n/a |
 | Cross-runner-machine | No | Yes |
 
 **Pick `local-mutex` when** runners share a machine and the bottleneck is a
-local resource — you want all your runners to keep running in parallel except
+local resource - you want all your runners to keep running in parallel except
 when they touch the one shared thing. **Pick `concurrency:`** when you want to
 ensure only one job (or one workflow) runs at a time across all runners,
 regardless of machine.
@@ -397,7 +397,7 @@ regardless of machine.
 
 - Self-hosted GitHub Actions runner on Linux, macOS, or any BSD that ships
   `lockf(1)`. A Linux runner inside **WSL2** counts as Linux and is fully
-  supported — it is how to run `local-mutex` on a Windows host.
+  supported - it is how to run `local-mutex` on a Windows host.
 - One of `lockf(1)` or `flock(1)` on `PATH`. Both are standard:
   - **macOS:** `lockf` is at `/usr/bin/lockf` on every install (BSD heritage).
   - **Linux:** `flock` is in `util-linux`, installed by default on every modern
@@ -410,15 +410,15 @@ regardless of machine.
   which already fits bare-metal self-hosted runners under the same OS user.
   Containerized runners that don't share `/tmp` should pass `lock-dir:`
   pointing at a bind-mounted host path. If no directory is shared between the
-  runners you want to coordinate, a local mutex can't help — use a distributed
+  runners you want to coordinate, a local mutex can't help - use a distributed
   lock instead.
 
 **Windows runners are not supported.** GitHub Actions offers `shell: sh` on
 Linux and macOS only, and neither Windows nor Git for Windows ships a `lockf`
 or `flock` command for the probe to find. Run the runner inside WSL2 instead.
 
-GitHub-hosted runners (`ubuntu-latest`, `macos-latest`) also work — they have
-the binaries — but the use case doesn't apply because GitHub-hosted runners are
+GitHub-hosted runners (`ubuntu-latest`, `macos-latest`) also work - they have
+the binaries - but the use case doesn't apply because GitHub-hosted runners are
 ephemeral and don't share state across jobs.
 
 This repository's CI still runs on GitHub-hosted Linux and macOS runners
@@ -464,11 +464,11 @@ inside the v2 series pin to `@v2`. Both tag kinds exist for every release. See
 After merging to `main`:
 
 ```sh
-# Immutable patch tag — never force-moved once pushed.
+# Immutable patch tag - never force-moved once pushed.
 git tag v2.x.y HEAD
 git push origin v2.x.y
 
-# Floating major tag — force-updated to the latest v2.x.y commit on every release.
+# Floating major tag - force-updated to the latest v2.x.y commit on every release.
 git tag -f v2 HEAD
 git push --force origin v2
 
@@ -478,7 +478,7 @@ gh release create v2.x.y --title "v2.x.y" --notes "changelog here"
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
 
 [local-cache-save]:
 https://github.com/curlewlabs-com/local-cache/blob/main/save/action.yml
