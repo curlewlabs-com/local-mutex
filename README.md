@@ -265,6 +265,66 @@ Nesting is fine as long as the names differ (an outer `cache-gc` lock around
 inner `cache-save-<key>` locks). Nesting the **same** name deadlocks - the lock
 is not reentrant.
 
+## Taking locks from a step's own script
+
+The section above assumes the caller is already inside a wrap - that is where
+`LOCAL_MUTEX_CLI` comes from. Plenty of callers are not. The shared write a job
+needs to serialize is often several levels down inside its own build script:
+`bun install` in a `check.sh` prelude, `bundle install` behind a make target, a
+`cargo fetch` in a test harness. Wrapping the whole step in the action would
+hold the lock for the length of the build rather than the length of the write,
+and the script has no supported way to find this one on its own.
+
+`setup` is that way. Run it once per job and every later step - and every
+script those steps call - can reach the CLI:
+
+```yaml
+- uses: curlewlabs-com/local-mutex/setup@v2
+
+- name: Run the checks
+  run: ./scripts/check.sh          # takes the lock around its own install
+```
+
+```sh
+# inside check.sh
+sh "$LOCAL_MUTEX_CLI" bun-cache 'bun install --frozen-lockfile'
+```
+
+It writes `LOCAL_MUTEX_CLI` to `$GITHUB_ENV`, so the value is the same script
+the action runs, at the version the workflow already pinned. Nothing in the
+consuming repo has to know where the runner checked this action out. A lock
+taken this way is in the same domain as one taken through `uses:` with the same
+name and `lock-dir`, for the same reason a per-item lock in a loop is: both
+hash the name to the same lockfile.
+
+Pass `lock-dir` if the job needs one, and it is exported as
+`LOCAL_MUTEX_LOCK_DIR` for every later CLI call that omits its 3rd argument:
+
+```yaml
+- uses: curlewlabs-com/local-mutex/setup@v2
+  with:
+    lock-dir: /mnt/shared/locks
+```
+
+A script that also runs outside CI - the common case for a build script - sees
+an unset `LOCAL_MUTEX_CLI` there and has to decide what that means. Decide it
+loudly. Falling back to running the command unlocked is the worst available
+answer in CI, where the caller believes it is serialized and is not; a
+developer machine running one build at a time is the case where unlocked is
+genuinely correct. Branch on something that distinguishes the two, and fail
+rather than guess:
+
+```sh
+if [ -n "${LOCAL_MUTEX_CLI:-}" ]; then
+    sh "$LOCAL_MUTEX_CLI" bun-cache 'bun install --frozen-lockfile'
+elif [ -n "${CI:-}" ]; then
+    echo "LOCAL_MUTEX_CLI unset in CI - add local-mutex/setup" >&2
+    exit 1
+else
+    bun install --frozen-lockfile
+fi
+```
+
 ## Diagnostic notices
 
 The action emits two [GitHub Actions `::notice::` annotations][notice-docs] to

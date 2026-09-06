@@ -1234,3 +1234,140 @@ jobs:
             || (echo "lock file leaked to /tmp" && exit 1)
           rm -rf "$RUNNER_TEMP/action-lockdir"
           echo "Action-interface lock-dir: OK"
+
+  # The setup sub-action's whole job is to make the CLI reachable from a step
+  # that is NOT running under a wrap. Its own job rather than more steps on the
+  # one above, because it writes to $GITHUB_ENV and that persists for every
+  # remaining step in whatever job runs it - which is the feature, and would be
+  # contamination anywhere else. Same OS matrix for the same reason: the path
+  # it resolves feeds the primitive probe, and the two platforms take different
+  # branches of it.
+  setup-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Compute lockfile hashes for setup test names
+        run: |
+          h() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              printf '%s' "$1" | sha256sum | cut -d' ' -f1
+            else
+              printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+            fi
+          }
+          {
+            printf 'H_T_SETUP_DOMAIN=%s\n'  "$(h t-setup-domain)"
+            printf 'H_SETUP_CONC=%s\n'      "$(h setup-conc)"
+            printf 'H_T_SETUP_LOCKDIR=%s\n' "$(h t-setup-lockdir)"
+          } >> "$GITHUB_ENV"
+
+      # Falsifies the tests below: without this step they would pass on an
+      # ambient value rather than on anything the sub-action did.
+      - name: LOCAL_MUTEX_CLI is unset before setup runs
+        run: |
+          [ -z "${LOCAL_MUTEX_CLI:-}" ] \
+            || (echo "Expected LOCAL_MUTEX_CLI unset, got: $LOCAL_MUTEX_CLI" && exit 1)
+          echo "Pre-setup environment is clean: OK"
+
+      - name: Set up the local-mutex CLI
+        id: setup
+        uses: ./setup
+
+      - name: Later steps see a usable CLI
+        run: |
+          [ -n "${LOCAL_MUTEX_CLI:-}" ] \
+            || (echo "Expected LOCAL_MUTEX_CLI to be set after setup" && exit 1)
+          [ -f "$LOCAL_MUTEX_CLI" ] \
+            || (echo "Expected a file at $LOCAL_MUTEX_CLI" && exit 1)
+          # The output and the environment must name the same script, or a
+          # caller that passes the path explicitly and one that reads it from
+          # the environment would take locks through different files.
+          [ "${{ steps.setup.outputs.cli }}" = "$LOCAL_MUTEX_CLI" ] \
+            || (echo "Output and env disagree: ${{ steps.setup.outputs.cli }} vs $LOCAL_MUTEX_CLI" && exit 1)
+          # No `..` left in the exported path: it is consumed by processes in
+          # other working directories, where a relative segment resolves
+          # somewhere else or nowhere.
+          case "$LOCAL_MUTEX_CLI" in
+            */../*) echo "Exported path is unresolved: $LOCAL_MUTEX_CLI" && exit 1 ;;
+          esac
+          echo "Setup exported a usable CLI: OK"
+
+      # The domain check. A lock taken through the exported CLI has to land on
+      # the same lockfile the action would use for that name, because that
+      # identity is the whole reason to reach for this rather than a lock of
+      # one's own.
+      - name: A bare step takes a lock in the action's own domain
+        run: |
+          rm -f "/tmp/local-mutex-${H_T_SETUP_DOMAIN}.lock"
+          out=$(sh "$LOCAL_MUTEX_CLI" t-setup-domain 'echo bare-step-ok')
+          [ "$out" = "bare-step-ok" ] \
+            || (echo "Command did not run under the lock, got: $out" && exit 1)
+          test -f "/tmp/local-mutex-${H_T_SETUP_DOMAIN}.lock" \
+            || (echo "Lock file not at the documented path" && ls -la /tmp/local-mutex-*.lock && exit 1)
+          rm -f "/tmp/local-mutex-${H_T_SETUP_DOMAIN}.lock"
+          echo "Bare-step lock in the action's domain: OK"
+
+      # Existing-at-the-right-path is not the same claim as excludes. The
+      # non-interleave shape and its jitter tolerance are the concurrency
+      # test's above; what is new here is only which CLI path is exercised.
+      - name: The exported CLI actually excludes
+        run: |
+          rm -f /tmp/setup-c1-start /tmp/setup-c1-end \
+                /tmp/setup-c2-start /tmp/setup-c2-end \
+                "/tmp/local-mutex-${H_SETUP_CONC}.lock"
+
+          ts='python3 -c "import time; print(time.time_ns())"'
+          hold_sleep=0.5
+          tolerance=100000000
+
+          sh "$LOCAL_MUTEX_CLI" setup-conc \
+            "$ts > /tmp/setup-c1-start; sleep $hold_sleep; $ts > /tmp/setup-c1-end" &
+          sh "$LOCAL_MUTEX_CLI" setup-conc \
+            "$ts > /tmp/setup-c2-start; sleep $hold_sleep; $ts > /tmp/setup-c2-end" &
+          wait
+
+          s1=$(cat /tmp/setup-c1-start); e1=$(cat /tmp/setup-c1-end)
+          s2=$(cat /tmp/setup-c2-start); e2=$(cat /tmp/setup-c2-end)
+          if [ "$s1" -le "$s2" ]; then
+            earlier_end=$e1; later_start=$s2; order="1-then-2"
+          else
+            earlier_end=$e2; later_start=$s1; order="2-then-1"
+          fi
+          if [ "$earlier_end" -gt "$((later_start + tolerance))" ]; then
+            echo "Overlap detected ($order): earlier_end=$earlier_end, later_start=$later_start"
+            echo "  s1=$s1 e1=$e1 s2=$s2 e2=$e2"
+            exit 1
+          fi
+
+          rm -f /tmp/setup-c1-start /tmp/setup-c1-end \
+                /tmp/setup-c2-start /tmp/setup-c2-end \
+                "/tmp/local-mutex-${H_SETUP_CONC}.lock"
+          echo "Exported-CLI mutual exclusion: OK (order: $order)"
+
+      # Last, because it adds LOCAL_MUTEX_LOCK_DIR to the job environment and
+      # every step after it inherits the changed default.
+      - name: Set up again with a lock-dir
+        run: mkdir -p "$RUNNER_TEMP/setup-lockdir"
+
+      - name: Setup exports the lock-dir it was given
+        uses: ./setup
+        with:
+          lock-dir: ${{ runner.temp }}/setup-lockdir
+
+      - name: A CLI call with no 3rd argument lands in that lock-dir
+        run: |
+          [ "$LOCAL_MUTEX_LOCK_DIR" = "$RUNNER_TEMP/setup-lockdir" ] \
+            || (echo "Expected LOCAL_MUTEX_LOCK_DIR=$RUNNER_TEMP/setup-lockdir, got: $LOCAL_MUTEX_LOCK_DIR" && exit 1)
+          sh "$LOCAL_MUTEX_CLI" t-setup-lockdir 'true'
+          test -f "$RUNNER_TEMP/setup-lockdir/local-mutex-${H_T_SETUP_LOCKDIR}.lock" \
+            || (echo "Lock did not land in the exported lock-dir" && ls -la "$RUNNER_TEMP/setup-lockdir" && exit 1)
+          # A lock-dir that only half-applies is worse than none: the writers
+          # would serialize in one directory and the readers in another.
+          test ! -f "/tmp/local-mutex-${H_T_SETUP_LOCKDIR}.lock" \
+            || (echo "Lock leaked to /tmp despite the exported lock-dir" && exit 1)
+          echo "Exported lock-dir honored: OK"
