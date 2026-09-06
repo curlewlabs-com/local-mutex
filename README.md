@@ -137,10 +137,20 @@ think about it. In containerized deployments where each runner sees its own
       /opt/runner-shared/tools/update-toolchain.sh
 ```
 
-All runners must mount the same host directory at the same in-container path.
-The lock-file basename inside `lock-dir` is the SHA-256 of `name`, so two
-runners sharing `lock-dir` and `name` always land on the same inode and
-serialize via the host kernel's lock.
+All runners must mount the same host directory at the same in-container path,
+and all of them must run under the host's kernel. The lock-file basename
+inside `lock-dir` is the SHA-256 of `name`, so two runners sharing `lock-dir`
+and `name` always land on the same inode and serialize via the host kernel's
+lock.
+
+The kernel condition is the one a bind mount does not give you for free. The
+lock this tool takes belongs to the kernel that took it, so a shared directory
+is a shared lock domain only for processes inside one kernel. A container that
+runs on its host's kernel meets that condition; one that runs inside a VM has
+the VM's kernel, and a directory it shares with processes outside the VM
+crosses a kernel boundary, across which this tool promises nothing. When in
+doubt, run the [manual check](#manual-validation-on-a-shared-runner-host) with
+one terminal on each side. The second terminal must block.
 
 ## Inputs
 
@@ -160,7 +170,9 @@ serialize via the host kernel's lock.
   the runners on the same machine - for example, on containerized self-hosted
   runners where `/tmp` is container-local. The directory must exist and be
   writable by the runner user. Callers setting the same `name` from two runners
-  continue to serialize as long as they share the same `lock-dir`.
+  continue to serialize as long as they share the same `lock-dir` and one
+  kernel. A directory shared across a kernel boundary does not meet the second
+  condition; see the containerized example above.
 
 ## Outputs
 
@@ -362,6 +374,11 @@ calling step.
   all runners, which is the right granularity when you need cross-machine
   coordination. (Most published "distributed mutex" composite actions are now
   archived and explicitly point users to `concurrency:`.)
+- **Runners do not share a kernel, even on one machine.** A runner inside a
+  VM has the VM's kernel, and this tool promises nothing across a kernel
+  boundary, however the directory is shared. The containerized example above
+  has the reasoning, and the manual check at the end of this document is the
+  test.
 - **You need fairness or FIFO ordering across operating systems.** On Linux
   (`flock`), acquisition order is not guaranteed - whichever caller the kernel
   happens to wake up first wins. On macOS/BSD, the `lockf(1)` man page
@@ -380,7 +397,7 @@ calling step.
 
 | | local-mutex | `concurrency:` (built-in) |
 |---|---|---|
-| Coordination scope | Same physical machine | GitHub API (cross-machine) |
+| Coordination scope | Same kernel (one machine, no VM boundary) | GitHub API (cross-machine) |
 | Granularity | Per-step / per-resource | Per-job or per-workflow |
 | Latency to acquire | Microseconds (kernel) | Queues whole jobs (cancels with `cancel-in-progress: true`) |
 | Setup required | None - composite action only | None - built into Actions |
@@ -406,12 +423,14 @@ regardless of machine.
   - **macOS:** `shasum` is at `/usr/bin/shasum` on every install (Perl core).
   - **Linux:** `sha256sum` is in `coreutils`, installed by default on every
     modern distribution.
-- A writable directory shared between concurrent runners. Defaults to `/tmp`,
-  which already fits bare-metal self-hosted runners under the same OS user.
-  Containerized runners that don't share `/tmp` should pass `lock-dir:`
-  pointing at a bind-mounted host path. If no directory is shared between the
-  runners you want to coordinate, a local mutex can't help - use a distributed
-  lock instead.
+- A writable directory shared between concurrent runners through one kernel.
+  Defaults to `/tmp`, which already fits bare-metal self-hosted runners under
+  the same OS user. Containerized runners that don't share `/tmp` should pass
+  `lock-dir:` pointing at a bind-mounted host path, and must run under the
+  host's kernel for that path to be a shared lock domain; a runner inside a
+  VM does not. If no directory is shared between the runners you want to
+  coordinate, or it is shared only across a kernel boundary, a local mutex
+  can't help - use a distributed lock instead.
 
 **Windows runners are not supported.** GitHub Actions offers `shell: sh` on
 Linux and macOS only, and neither Windows nor Git for Windows ships a `lockf`
@@ -452,6 +471,12 @@ Expected result: Terminal 2 blocks until Terminal 1 exits, then acquires the
 same lock immediately after. If you want to mimic the action more closely,
 repeat the same experiment from two separate self-hosted runner jobs on the
 same host using `uses: curlewlabs-com/local-mutex@v2` with the same `name:`.
+
+For a containerized deployment, run the same two commands with one terminal
+inside the container and one outside it, both passing the shared `lock-dir`
+as the third argument. That is also the test for whether the two sides share
+a kernel. If Terminal 2 acquires the lock while Terminal 1 is still sleeping,
+they do not, and no choice of `lock-dir` will make them serialize.
 
 ## Releasing
 

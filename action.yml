@@ -35,7 +35,10 @@ inputs:
       lock file basename inside this directory is the SHA-256 of name
       (as 'local-mutex-<64-hex-digest>.lock'), so callers setting the
       same name from two runners continue to serialize as long as
-      they share lock-dir.
+      they share lock-dir and one kernel. A directory a VM-hosted
+      container shares with native host processes crosses a kernel
+      boundary, across which this action promises nothing; see
+      README.md.
     required: false
     default: ''
 

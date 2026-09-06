@@ -64,7 +64,10 @@ cmd="$2"
 # action.yml surface where `lock-dir` is an optional empty-string input.
 # Callers on self-hosted runners with a non-shared /tmp (containerized
 # runners, chrooted sandboxes, or anywhere /tmp doesn't see across sibling
-# runners) point this at a real shared filesystem path.
+# runners) point this at a real shared filesystem path. Shared through one
+# kernel, that is: the lock is the kernel's, and nothing is promised across
+# a kernel boundary such as a VM-hosted container's. README.md's
+# containerized example has the reasoning.
 lock_dir="${3:-}"
 if [ -z "$lock_dir" ]; then
     lock_dir="${LOCAL_MUTEX_LOCK_DIR:-/tmp}"
