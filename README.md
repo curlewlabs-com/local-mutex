@@ -7,10 +7,12 @@ When two runners hit `pod install --repo-update`, `claude update`,
 each other silently.
 
 `local-mutex` wraps any shell command in a kernel-level file lock
-([`lockf(1)`](https://man.freebsd.org/cgi/man.cgi?lockf(1)) on macOS/BSD, [`flock(1)`](https://man7.org/linux/man-pages/man1/flock.1.html) on Linux, whichever is on `PATH`).
-The lock is acquired before your command runs, held for the duration, and
-released automatically when it exits — including on `SIGKILL`, OOM kill, or
-machine reboot. No external services, no stale-lock recovery, no PID tracking.
+([`lockf(1)`](https://man.freebsd.org/cgi/man.cgi?lockf(1)) on macOS/BSD,
+[`flock(1)`](https://man7.org/linux/man-pages/man1/flock.1.html) on Linux,
+whichever is on `PATH`). The lock is acquired before your command runs, held
+for the duration, and released automatically when it exits — including on
+`SIGKILL`, OOM kill, or machine reboot. No external services, no stale-lock
+recovery, no PID tracking.
 
 ## Why
 
@@ -116,8 +118,7 @@ runners — uses `local-mutex` for exactly this pattern. Its `save/action.yml`
 wraps the per-key write step in `local-mutex` so concurrent saves of the same
 cache key serialize via `lockf`/`flock` instead of needing per-script PID
 tracking and stale-lock recovery. See its
-[`save/action.yml`](https://github.com/curlewlabs-com/local-cache/blob/main/save/action.yml)
-for a working production usage.
+[`save/action.yml`][local-cache-save] for a working production usage.
 
 ### Example: containerized runners with a non-shared `/tmp`
 
@@ -143,17 +144,30 @@ serialize via the host kernel's lock.
 
 ## Inputs
 
-| Name | Required | Description |
-|---|---|---|
-| `name` | yes | Lock identifier. Echoed verbatim into the diagnostic `::notice::` annotations so callers see a human-readable identifier in the log, and hashed with SHA-256 to form the lock file basename (`local-mutex-<64-hex-digest>.lock`) inside `lock-dir`. Pick a name that describes the resource being protected. Any length is accepted (SHA-256 produces a fixed 64-character basename regardless of input length). Arbitrary bytes are accepted, including non-ASCII. Empty, whitespace-only, or control-character-containing (newline, tab, etc.) values are rejected. |
-| `run` | yes | Shell command to execute while holding the lock. Runs under `/bin/sh`. Multi-line scripts work. Empty or whitespace-only `run` is rejected. |
-| `lock-dir` | no | Absolute path to the directory where the lock file is created. Defaults to `/tmp`. Override only when `/tmp` isn't shared across the runners on the same machine — for example, on containerized self-hosted runners where `/tmp` is container-local. The directory must exist and be writable by the runner user. Callers setting the same `name` from two runners continue to serialize as long as they share the same `lock-dir`. |
+- **`name`** (required): Lock identifier. Echoed verbatim into the diagnostic
+  `::notice::` annotations so callers see a human-readable identifier in the
+  log, and hashed with SHA-256 to form the lock file basename
+  (`local-mutex-<64-hex-digest>.lock`) inside `lock-dir`. Pick a name that
+  describes the resource being protected. Any length is accepted (SHA-256
+  produces a fixed 64-character basename regardless of input length). Arbitrary
+  bytes are accepted, including non-ASCII. Empty, whitespace-only, or
+  control-character-containing (newline, tab, etc.) values are rejected.
+- **`run`** (required): Shell command to execute while holding the lock. Runs
+  under `/bin/sh`. Multi-line scripts work. Empty or whitespace-only `run` is
+  rejected.
+- **`lock-dir`** (optional): Absolute path to the directory where the lock file
+  is created. Defaults to `/tmp`. Override only when `/tmp` isn't shared across
+  the runners on the same machine — for example, on containerized self-hosted
+  runners where `/tmp` is container-local. The directory must exist and be
+  writable by the runner user. Callers setting the same `name` from two runners
+  continue to serialize as long as they share the same `lock-dir`.
 
 ## Outputs
 
-| Name | Description |
-|---|---|
-| `output-file` | Path to a file containing all `$GITHUB_OUTPUT` writes made by the inner command. Because composite actions don't propagate outputs from nested steps automatically, callers that need the inner command's outputs must read this file in a subsequent step. |
+- **`output-file`**: Path to a file containing all `$GITHUB_OUTPUT` writes made
+  by the inner command. Because composite actions don't propagate outputs from
+  nested steps automatically, callers that need the inner command's outputs must
+  read this file in a subsequent step.
 
 ### Propagating inner outputs
 
@@ -241,9 +255,8 @@ is not reentrant.
 
 ## Diagnostic notices
 
-The action emits two
-[GitHub Actions `::notice::` annotations](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-a-notice-message)
-to stderr around each lock acquire:
+The action emits two [GitHub Actions `::notice::` annotations][notice-docs] to
+stderr around each lock acquire:
 
 ```
 ::notice::local-mutex: waiting for lock <name> at <UTC timestamp>
@@ -345,11 +358,10 @@ calling step.
 
 - **Runners are on different machines.** Local file locks can't coordinate
   across machines. Use GitHub Actions' built-in
-  [`concurrency:`](https://docs.github.com/en/actions/using-jobs/using-concurrency)
-  instead — it serializes whole jobs across all runners, which is the right
-  granularity when you need cross-machine coordination. (Most published
-  "distributed mutex" composite actions are now archived and explicitly point
-  users to `concurrency:`.)
+  [`concurrency:`][concurrency-docs] instead — it serializes whole jobs across
+  all runners, which is the right granularity when you need cross-machine
+  coordination. (Most published "distributed mutex" composite actions are now
+  archived and explicitly point users to `concurrency:`.)
 - **You need fairness or FIFO ordering across operating systems.** On Linux
   (`flock`), acquisition order is not guaranteed — whichever caller the kernel
   happens to wake up first wins. On macOS/BSD, the `lockf(1)` man page
@@ -467,3 +479,12 @@ gh release create v2.x.y --title "v2.x.y" --notes "changelog here"
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+[local-cache-save]:
+https://github.com/curlewlabs-com/local-cache/blob/main/save/action.yml
+
+[notice-docs]:
+https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-a-notice-message
+
+[concurrency-docs]:
+https://docs.github.com/en/actions/using-jobs/using-concurrency
