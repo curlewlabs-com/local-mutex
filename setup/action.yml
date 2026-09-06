@@ -1,0 +1,97 @@
+name: 'Local Mutex Setup'
+description: >-
+  Put the local-mutex CLI on the job environment so a later step, or a build
+  script it calls, can take a lock without knowing where the runner checked
+  this action out.
+
+# Why this exists as a separate action rather than an input on the main one:
+#
+# The main action wraps ONE command in ONE lock, and exports LOCAL_MUTEX_CLI
+# into that command so a wrapped sweep can take per-item locks from a loop.
+# That serves a caller who is already inside a lock, and nobody else. A job
+# whose `bun install` / `bundle install` / `cargo fetch` happens several levels
+# down inside its own check script has the same need and none of the access:
+# the script is not running under a wrap, so it inherits nothing, and the other
+# ways to reach the lock are all wrong. Wrapping the whole outer step holds the
+# lock for the length of the build rather than the length of the shared write.
+# Hardcoding `_work/_actions/<owner>/local-mutex/<ref>/lib/` makes the consumer
+# depend on a runner layout that is not ours to promise. Checking this repo out
+# a second time duplicates the version pin.
+#
+# So this step resolves the path once, at the version the caller already
+# pinned, and writes it where every later step in the job can read it. The
+# script it points at is the same one `action.yml` runs, which is what makes a
+# lock taken through it serialize against a lock taken through the action.
+
+inputs:
+  lock-dir:
+    description: >-
+      Absolute path to the directory where lock files are created, exported as
+      LOCAL_MUTEX_LOCK_DIR so a later CLI call with no 3rd argument lands in
+      this lock domain. Defaults to empty, which leaves the variable unset and
+      the CLI on its own /tmp default. Set it for the same reason the main
+      action's `lock-dir` input exists: a runner whose /tmp is not shared with
+      its siblings on the same machine. It is validated by the CLI on each
+      call, not here, so one place decides what a usable lock directory is.
+    required: false
+    default: ''
+
+outputs:
+  cli:
+    description: >-
+      Absolute path to the lock script, for a caller that would rather pass it
+      explicitly than read it from the environment.
+    value: ${{ steps.resolve.outputs.cli }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Export the local-mutex CLI path
+      id: resolve
+      shell: sh
+      env:
+        INPUT_LOCK_DIR: ${{ inputs.lock-dir }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -eu
+
+        # `github.action_path` is this sub-action's own directory, so the
+        # script sits one level up. Resolved through cd/pwd rather than left
+        # as a `..` path because the value is consumed by other processes in
+        # other working directories, where a relative segment names a
+        # different file or none.
+        lib_dir=$(CDPATH='' cd -- "$ACTION_PATH/.." && pwd)
+        cli="$lib_dir/lib/local-mutex.sh"
+
+        if [ ! -f "$cli" ] || [ ! -r "$cli" ]; then
+            printf '::error::local-mutex setup: lock script not found at %s\n' "$cli" >&2
+            exit 1
+        fi
+
+        # A newline in either value would end the `name=value` line and let
+        # the rest define a second variable of the writer's choosing. Neither
+        # value can hold one on any runner layout we know of, which is exactly
+        # why an unchecked write would never fail visibly if that stopped
+        # being true. Same reason the lock script rejects control characters
+        # in `name`.
+        nl=$(printf '\nx')
+        nl=${nl%x}
+        case "$cli$INPUT_LOCK_DIR" in
+        *"$nl"*)
+            printf '::error::local-mutex setup: refusing to export a value containing a newline\n' >&2
+            exit 1
+            ;;
+        esac
+
+        printf 'LOCAL_MUTEX_CLI=%s\n' "$cli" >> "$GITHUB_ENV"
+        printf 'cli=%s\n' "$cli" >> "$GITHUB_OUTPUT"
+
+        # Written only when the caller asked for one. An empty value would be
+        # read as unset by the CLI's own `:-` default anyway, but leaving the
+        # variable absent keeps "nobody set a lock-dir" distinguishable from
+        # "somebody set an empty one" for anything that reads the environment.
+        if [ -n "$INPUT_LOCK_DIR" ]; then
+            printf 'LOCAL_MUTEX_LOCK_DIR=%s\n' "$INPUT_LOCK_DIR" >> "$GITHUB_ENV"
+        fi
+
+        printf '::notice::local-mutex: CLI available at %s\n' "$cli" >&2

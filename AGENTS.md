@@ -30,6 +30,16 @@ mutex on self-hosted runners. Uses `lockf(1)` (BSD/macOS) or `flock(1)`
   names are part of the versioned contract: changing any of them desyncs
   callers and is a major version bump, exactly like renaming an `action.yml`
   input.
+- `setup/action.yml` exists so a caller that is NOT running under a wrap can
+  still reach the CLI: it resolves `lib/local-mutex.sh` from its own
+  `github.action_path` and writes `LOCAL_MUTEX_CLI` (and `LOCAL_MUTEX_LOCK_DIR`
+  when given a `lock-dir`) to `$GITHUB_ENV`. Its path, the variables it writes,
+  and the `cli` output are part of the versioned contract for the same reason
+  the script's own are - a consumer's build script calls it by name. It adds no
+  input to `action.yml`, so it is a minor bump rather than a major one. Keep it
+  a resolver: `lock-dir` is validated by the script on each call, not here, so
+  there is one place that decides what a usable lock directory is, and a second
+  copy cannot drift from it.
 - Every change ships with a test in `.github/workflows/ci.yml`. Concurrency
   tests are non-negotiable - the whole product is "two callers serialize
   correctly," so any change to the locking path must be exercised by a
