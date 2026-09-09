@@ -93,6 +93,9 @@ jobs:
             printf 'H_T_EMPTY_LD=%s\n'       "$(h t-empty-ld)"
             printf 'H_T_ACTION_LOCKDIR=%s\n' "$(h t-action-lockdir)"
             printf 'H_T_INHERIT_INNER=%s\n'  "$(h t-inherit-inner)"
+            printf 'H_T_HANG=%s\n'           "$(h t-hang)"
+            printf 'H_T_HOLDER=%s\n'         "$(h t-holder)"
+            printf 'H_T_STALE=%s\n'          "$(h t-stale)"
           } >> "$GITHUB_ENV"
 
       # --- Sanity ----------------------------------------------------------
@@ -269,6 +272,96 @@ jobs:
                 /tmp/conc-2-start /tmp/conc-2-end \
                 "/tmp/local-mutex-${H_CONC_2}.lock"
           echo "Concurrent same-name serialization: OK (order: $order)"
+
+      # --- Diagnosability ---------------------------------------------------
+      #
+      # These exist because a real 30-minute CI hang could not be diagnosed
+      # from the log at all. `waiting` with nothing after it means either
+      # "still blocked on the lock" or "took the lock instantly and the
+      # wrapped command hung", and the two want opposite fixes. The
+      # `acquired` line is what separates them, so it is asserted here as
+      # behavior rather than left as log decoration.
+
+      - name: A hung command is distinguishable from a blocked wait
+        run: |
+          rm -f "/tmp/local-mutex-${H_T_HANG}.lock" \
+                "/tmp/local-mutex-${H_T_HANG}.lock.holder"
+
+          # Uncontended: nothing else holds this name, so any elapsed time
+          # here belongs to the command, not the wait. A reader must be able
+          # to conclude that from the log alone.
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-hang 'sleep 2' 2>/tmp/hang.log
+
+          grep -q 'acquired t-hang .* after waiting 0s' /tmp/hang.log || {
+            echo "FAIL: no acquired line proving the lock was free"; cat /tmp/hang.log; exit 1; }
+          # The hold must report the command's duration, which is what says
+          # "the command is the slow part" rather than the lock.
+          held=$(sed -n 's/.*released t-hang .* after holding \([0-9]*\)s.*/\1/p' /tmp/hang.log)
+          if [ -z "$held" ] || [ "$held" -lt 2 ]; then
+            echo "FAIL: hold duration missing or too small: '$held'"; cat /tmp/hang.log; exit 1
+          fi
+          rm -f /tmp/hang.log "/tmp/local-mutex-${H_T_HANG}.lock"
+          echo "Hung-command vs blocked-wait: distinguishable (held ${held}s after a 0s wait)"
+
+      - name: A waiter names the holder it is queued behind
+        run: |
+          rm -f "/tmp/local-mutex-${H_T_HOLDER}.lock" \
+                "/tmp/local-mutex-${H_T_HOLDER}.lock.holder"
+
+          # Holder runs with GitHub identifiers set so the breadcrumb carries
+          # a job a reader can open; the waiter runs without them, proving the
+          # waiter reports the HOLDER's identity and not its own environment.
+          GITHUB_RUN_ID=4242 GITHUB_JOB=holder-job GITHUB_RUN_ATTEMPT=1 \
+            sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-holder 'sleep 4' 2>/dev/null &
+          sleep 1
+          env -u GITHUB_RUN_ID -u GITHUB_JOB -u GITHUB_RUN_ATTEMPT \
+            sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-holder 'true' 2>/tmp/waiter.log
+          wait
+
+          grep -q 'last recorded holder: run 4242 job holder-job' /tmp/waiter.log || {
+            echo "FAIL: waiter did not name the holder"; cat /tmp/waiter.log; exit 1; }
+          waited=$(sed -n 's/.*acquired t-holder .* after waiting \([0-9]*\)s.*/\1/p' /tmp/waiter.log)
+          if [ -z "$waited" ] || [ "$waited" -lt 2 ]; then
+            echo "FAIL: waiter did not report a real wait: '$waited'"; cat /tmp/waiter.log; exit 1
+          fi
+          # Cleanly released, so the breadcrumb must be gone.
+          if [ -e "/tmp/local-mutex-${H_T_HOLDER}.lock.holder" ]; then
+            echo "FAIL: breadcrumb survived a clean release"; exit 1
+          fi
+          rm -f /tmp/waiter.log "/tmp/local-mutex-${H_T_HOLDER}.lock"
+          echo "Waiter named the holder and reported a ${waited}s wait: OK"
+
+      - name: A stale breadcrumb never blocks the next acquirer
+        run: |
+          rm -f "/tmp/local-mutex-${H_T_STALE}.lock" \
+                "/tmp/local-mutex-${H_T_STALE}.lock.holder"
+
+          # SIGKILL a holder: the kernel releases the lock, but the breadcrumb
+          # is a plain file and survives. It is diagnostic only, so the next
+          # acquirer must be unaffected - this is the property that keeps it on
+          # the safe side of AGENTS.md's no-PID-stale-recovery rule.
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-stale 'sleep 30' 2>/dev/null &
+          bg=$!
+          sleep 1
+          pkill -KILL -f 'local-mutex.sh t-stale' || true
+          kill -KILL "$bg" 2>/dev/null || true
+          wait 2>/dev/null || true
+
+          [ -e "/tmp/local-mutex-${H_T_STALE}.lock.holder" ] || {
+            echo "FAIL: expected a stale breadcrumb to exist after SIGKILL"; exit 1; }
+
+          start=$(date -u +%s)
+          sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-stale 'true' 2>/tmp/stale.log
+          elapsed=$(( $(date -u +%s) - start ))
+          if [ "$elapsed" -gt 5 ]; then
+            echo "FAIL: stale breadcrumb delayed the acquire by ${elapsed}s"; cat /tmp/stale.log; exit 1
+          fi
+          grep -q 'acquired t-stale .* after waiting 0s' /tmp/stale.log || {
+            echo "FAIL: acquire after a stale breadcrumb was not immediate"; cat /tmp/stale.log; exit 1; }
+
+          rm -f /tmp/stale.log "/tmp/local-mutex-${H_T_STALE}.lock" \
+                "/tmp/local-mutex-${H_T_STALE}.lock.holder"
+          echo "Stale breadcrumb is diagnostic only: OK (acquired in ${elapsed}s)"
 
       - name: Stress - 20 concurrent acquires of the same name
         run: |

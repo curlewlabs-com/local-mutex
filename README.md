@@ -327,23 +327,56 @@ fi
 
 ## Diagnostic notices
 
-The action emits two [GitHub Actions `::notice::` annotations][notice-docs] to
+The action emits three [GitHub Actions `::notice::` annotations][notice-docs] to
 stderr around each lock acquire:
 
 ```
 ::notice::local-mutex: waiting for lock <name> at <UTC timestamp>
-::notice::local-mutex: released <name> at <UTC timestamp>
+::notice::local-mutex: acquired <name> at <UTC timestamp> after waiting <N>s
+::notice::local-mutex: released <name> at <UTC timestamp> after holding <N>s
 ```
 
-The wait notice is emitted before handing off to the lock primitive, so a hung
-step shows what it's blocked on. The release notice is emitted after the
-wrapped command exits - on success, on failure, and on signal-driven exits the
-inner shell can trap. Both notices appear in the step log and surface in the
-job summary annotations.
+When another caller holds the lock, the wait notice names it:
+
+```
+::notice::local-mutex: waiting for lock <name> at <t> - last recorded holder: run 4242 job build attempt 1 (pid 91011)
+```
+
+**Read `acquired` first when a step hangs.** A `waiting` line followed by
+silence has two completely different causes - still blocked on the lock, or the
+lock was taken instantly and the wrapped command is what hung - and they want
+opposite fixes. The `acquired` line separates them, and the two elapsed figures
+say which side was pathological:
+
+| What you see | What it means |
+| --- | --- |
+| `waiting`, then nothing | Still blocked. The holder named on the wait line is what to chase. |
+| `acquired ... after waiting 0s`, then nothing | Lock was free. The wrapped command is the hang; the lock is a red herring. |
+| `acquired ... after waiting 900s` | Real contention. Something held this lock for 15 minutes. |
+| `released ... after holding 900s` | This caller was that something. |
+
+The holder identity comes from `GITHUB_RUN_ID` / `GITHUB_JOB` /
+`GITHUB_RUN_ATTEMPT` when they are set, and the pid otherwise, so it is useful
+off Actions too. It is written to a `<lockfile>.holder` breadcrumb while the
+lock is held and removed on release.
+
+That breadcrumb is **diagnostic only and never load-bearing**: nothing reads it
+to decide whether the lock is free, and no staleness is inferred from it. A
+`SIGKILL`ed holder leaves the file behind, which is why the wait line says *last
+recorded* holder - the kernel, not that file, is what releases the lock, so the
+next acquirer takes it immediately and the `after waiting 0s` on its own
+`acquired` line says so.
+
+The wait notice is emitted before handing off to the lock primitive; `acquired`
+is the first thing that runs with the lock actually held; `released` is emitted
+after the wrapped command exits - on success, on failure, and on signal-driven
+exits the inner shell can trap. All three appear in the step log and surface in
+the job summary annotations.
 
 If the wrapped `run` command installs its own `trap '...' EXIT`, POSIX shell
 replaces our trap with the caller's. The caller's trap still runs correctly;
-only our release notice is suppressed. The wait notice is unaffected.
+only our release notice and the breadcrumb cleanup are suppressed. The wait and
+acquire notices are unaffected.
 
 ## How it works
 
