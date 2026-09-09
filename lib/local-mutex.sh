@@ -242,7 +242,16 @@ fi
 # safe line of output.
 LMX_NAME="$name"
 export LMX_NAME
-LMX_T0=$(date -u +%s)
+# Every date(1) call here is non-fatal, and that is load-bearing rather than
+# defensive habit: `set -e` is active, so a bare `X=$(date)` assignment ABORTS
+# the script when date is not on PATH - which is exactly the locked-down PATH the
+# "missing lock binary" test builds, and aborting there replaces the clear
+# exit-127 "neither lockf nor flock" error with a bare "date: not found". The
+# pre-existing date calls survived that test only because they sit inside printf
+# arguments, where a failed substitution is tolerated. So: timings degrade to an
+# absent figure, and the notices degrade to no timestamp, but neither can change
+# what the script does.
+LMX_T0=$(date -u +%s 2>/dev/null) || LMX_T0=
 export LMX_T0
 
 # The holder breadcrumb. Written under the lock, removed on release, so its
@@ -279,21 +288,23 @@ if [ -r "$LMX_HOLDER" ]; then
 fi
 if [ -n "$lmx_held_by" ]; then
     printf '::notice::local-mutex: waiting for lock %s at %s - last recorded holder: %s\n' \
-        "$name" "$(date -u +%FT%TZ)" "$lmx_held_by" >&2
+        "$name" "$(date -u +%FT%TZ 2>/dev/null)" "$lmx_held_by" >&2
 else
-    printf '::notice::local-mutex: waiting for lock %s at %s\n' "$name" "$(date -u +%FT%TZ)" >&2
+    printf '::notice::local-mutex: waiting for lock %s at %s\n' "$name" "$(date -u +%FT%TZ 2>/dev/null)" >&2
 fi
 
 # shellcheck disable=SC2016
 # Single quotes are intentional: $-expansion must defer to trap-fire time.
-trap_line='trap '\''printf "::notice::local-mutex: released %s at %s after holding %ss\n" "$LMX_NAME" "$(date -u +%FT%TZ)" "$(($(date -u +%s) - LMX_T1))" >&2; rm -f "$LMX_HOLDER"'\'' EXIT'
+trap_line='trap '\''lmx_t2=$(date -u +%s 2>/dev/null) || lmx_t2=; lmx_held=""; [ -n "$LMX_T1" ] && [ -n "$lmx_t2" ] && lmx_held=" after holding $((lmx_t2 - LMX_T1))s"; printf "::notice::local-mutex: released %s at %s%s\n" "$LMX_NAME" "$(date -u +%FT%TZ 2>/dev/null)" "$lmx_held" >&2; rm -f "$LMX_HOLDER"'\'' EXIT'
 
 # shellcheck disable=SC2016
 # Same reason: this runs in the inner shell, under the lock.
-acquire_lines='LMX_T1=$(date -u +%s)
+acquire_lines='LMX_T1=$(date -u +%s 2>/dev/null) || LMX_T1=
 export LMX_T1
-printf "::notice::local-mutex: acquired %s at %s after waiting %ss\n" "$LMX_NAME" "$(date -u +%FT%TZ)" "$((LMX_T1 - LMX_T0))" >&2
-printf "%s since %s\n" "$LMX_WHO" "$(date -u +%FT%TZ)" > "$LMX_HOLDER.$$" 2>/dev/null && mv -f "$LMX_HOLDER.$$" "$LMX_HOLDER" 2>/dev/null || rm -f "$LMX_HOLDER.$$" 2>/dev/null || :'
+lmx_waited=""
+[ -n "$LMX_T0" ] && [ -n "$LMX_T1" ] && lmx_waited=" after waiting $((LMX_T1 - LMX_T0))s"
+printf "::notice::local-mutex: acquired %s at %s%s\n" "$LMX_NAME" "$(date -u +%FT%TZ 2>/dev/null)" "$lmx_waited" >&2
+printf "%s since %s\n" "$LMX_WHO" "$(date -u +%FT%TZ 2>/dev/null)" > "$LMX_HOLDER.$$" 2>/dev/null && mv -f "$LMX_HOLDER.$$" "$LMX_HOLDER" 2>/dev/null || rm -f "$LMX_HOLDER.$$" 2>/dev/null || :'
 
 inner_script="$acquire_lines
 $trap_line

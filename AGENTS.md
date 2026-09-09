@@ -73,6 +73,13 @@ mutex on self-hosted runners. Uses `lockf(1)` (BSD/macOS) or `flock(1)`
   filesystem sees a fixed-length collision-resistant basename. Changing the
   default, the hashing scheme, or the lockfile name pattern desyncs in-flight
   callers and requires a major version bump.
+- **Every `date(1)` call must stay non-fatal.** `set -e` is active, so a bare
+  `X=$(date ...)` assignment aborts the script where date is not on PATH - which
+  is exactly the locked-down PATH the "missing lock binary" test builds, and
+  aborting there replaces the clear exit-127 "neither lockf nor flock" error
+  with a bare `date: not found`. Guard every call (`2>/dev/null` plus a fallback)
+  and omit an elapsed figure rather than failing without one. A timing is a
+  diagnostic; the exit contract is not.
 - The three `::notice::` lines - `waiting`, `acquired`, `released` - are a
   supported diagnostic contract, not decoration. `acquired` is the one that
   separates "still blocked on the lock" from "took the lock instantly and the
