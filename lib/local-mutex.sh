@@ -219,13 +219,22 @@ if mutex_self_abs=$(CDPATH='' cd -- "$mutex_self_dir" 2>/dev/null && pwd); then
     export LOCAL_MUTEX_CLI
 fi
 
-# Emit a diagnostic notice before and after the lock acquire so callers
-# debugging a hung step can see what the step is blocked on and when it
-# cleared. The release notice lives in an EXIT trap inside the inner
-# shell because `exec lockf`/`exec flock` replaces this script's process
-# and leaves no post-hook here. If the caller's `run` installs its own
-# EXIT trap, ours is replaced and the release notice drops; caller's
-# trap still runs.
+# Emit diagnostic notices around the acquire so a caller debugging a hung
+# step can tell WHICH of the two possible hangs it has. Three notices, and
+# the middle one is why: `waiting` alone cannot distinguish "still blocked
+# on the lock" from "took the lock instantly and the wrapped command is
+# hung", because both look like a `waiting` line followed by silence. That
+# ambiguity cost a real 30-minute CI investigation, so `acquired` is not
+# decoration - it is the line that splits the two hangs, and the elapsed
+# figures on it and on `released` are what say whether a wait or a hold was
+# the pathological one.
+#
+# `acquired` and `released` live inside the inner shell because
+# `exec lockf`/`exec flock` replaces this script's process and leaves no
+# post-hook here; the inner shell is the first code that runs with the lock
+# actually held. The release notice is an EXIT trap. If the caller's `run`
+# installs its own EXIT trap, ours is replaced and the release notice drops;
+# the caller's trap still runs.
 #
 # $name is emitted verbatim (not $name_hash) so callers see the human
 # identifier they supplied rather than a 64-hex digest. Control chars
@@ -233,13 +242,61 @@ fi
 # safe line of output.
 LMX_NAME="$name"
 export LMX_NAME
-printf '::notice::local-mutex: waiting for lock %s at %s\n' "$name" "$(date -u +%FT%TZ)" >&2
+LMX_T0=$(date -u +%s)
+export LMX_T0
+
+# The holder breadcrumb. Written under the lock, removed on release, so its
+# PRESENCE means somebody holds the lock (or died holding it). A waiter reads
+# it before blocking and names who it is queued behind - the question the
+# 30-minute investigation above could not answer from the logs at all.
+#
+# DIAGNOSTIC ONLY, and deliberately not load-bearing: nothing reads it to
+# decide whether the lock is free, no staleness is inferred from it, and a
+# leftover file after a SIGKILL misleads nobody because the kernel - not this
+# file - is what releases the lock. That is the line AGENTS.md draws against
+# PID-tracking stale recovery, and this stays on the safe side of it.
+LMX_HOLDER="${lockfile}.holder"
+export LMX_HOLDER
+
+# Who to report as the holder. GitHub's identifiers when present, so a waiter
+# names a job a reader can open, and the pid otherwise so the line is still
+# useful off Actions. Kept to one line with no control characters, the same
+# constraint $name is validated against, because it is echoed into a notice.
+lmx_who="pid $$"
+if [ -n "${GITHUB_RUN_ID:-}" ]; then
+    lmx_who="run ${GITHUB_RUN_ID}${GITHUB_JOB:+ job ${GITHUB_JOB}}${GITHUB_RUN_ATTEMPT:+ attempt ${GITHUB_RUN_ATTEMPT}} (pid $$)"
+fi
+LMX_WHO="$lmx_who"
+export LMX_WHO
+
+# Name the current holder in the waiting line when there is one. `2>/dev/null`
+# and the emptiness check keep this fail-soft: an unreadable or absent
+# breadcrumb degrades the notice, never the lock. Read BEFORE the exec, which
+# is the only moment this process still runs.
+lmx_held_by=""
+if [ -r "$LMX_HOLDER" ]; then
+    lmx_held_by=$(head -n 1 "$LMX_HOLDER" 2>/dev/null || :)
+fi
+if [ -n "$lmx_held_by" ]; then
+    printf '::notice::local-mutex: waiting for lock %s at %s - last recorded holder: %s\n' \
+        "$name" "$(date -u +%FT%TZ)" "$lmx_held_by" >&2
+else
+    printf '::notice::local-mutex: waiting for lock %s at %s\n' "$name" "$(date -u +%FT%TZ)" >&2
+fi
 
 # shellcheck disable=SC2016
 # Single quotes are intentional: $-expansion must defer to trap-fire time.
-trap_line='trap '\''printf "::notice::local-mutex: released %s at %s\n" "$LMX_NAME" "$(date -u +%FT%TZ)" >&2'\'' EXIT'
+trap_line='trap '\''printf "::notice::local-mutex: released %s at %s after holding %ss\n" "$LMX_NAME" "$(date -u +%FT%TZ)" "$(($(date -u +%s) - LMX_T1))" >&2; rm -f "$LMX_HOLDER"'\'' EXIT'
 
-inner_script="$trap_line
+# shellcheck disable=SC2016
+# Same reason: this runs in the inner shell, under the lock.
+acquire_lines='LMX_T1=$(date -u +%s)
+export LMX_T1
+printf "::notice::local-mutex: acquired %s at %s after waiting %ss\n" "$LMX_NAME" "$(date -u +%FT%TZ)" "$((LMX_T1 - LMX_T0))" >&2
+printf "%s since %s\n" "$LMX_WHO" "$(date -u +%FT%TZ)" > "$LMX_HOLDER.$$" 2>/dev/null && mv -f "$LMX_HOLDER.$$" "$LMX_HOLDER" 2>/dev/null || rm -f "$LMX_HOLDER.$$" 2>/dev/null || :'
+
+inner_script="$acquire_lines
+$trap_line
 $cmd"
 
 if command -v lockf >/dev/null 2>&1; then

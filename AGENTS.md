@@ -73,6 +73,17 @@ mutex on self-hosted runners. Uses `lockf(1)` (BSD/macOS) or `flock(1)`
   filesystem sees a fixed-length collision-resistant basename. Changing the
   default, the hashing scheme, or the lockfile name pattern desyncs in-flight
   callers and requires a major version bump.
+- The three `::notice::` lines - `waiting`, `acquired`, `released` - are a
+  supported diagnostic contract, not decoration. `acquired` is the one that
+  separates "still blocked on the lock" from "took the lock instantly and the
+  wrapped command hung"; a `waiting` line followed by silence means both, and
+  they want opposite fixes. Removing it, or dropping the elapsed figures on
+  `acquired`/`released`, puts the log back where it could not answer a real
+  30-minute CI hang. The `<lockfile>.holder` breadcrumb behind the wait line's
+  holder name is diagnostic ONLY: nothing may read it to decide whether the lock
+  is free, and no staleness may be inferred from it - that is the same line this
+  file draws against PID-tracking stale recovery, and a stale breadcrumb after a
+  `SIGKILL` must never delay the next acquirer. There is a test for exactly that.
 - Reject any `name` containing control characters (bytes `0x00`-`0x1F` or
   `0x7F`). The raw `name` flows into `::notice::` output unfiltered; a literal
   newline would split the annotation into two lines and the runner's log parser
