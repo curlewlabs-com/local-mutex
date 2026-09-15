@@ -44,17 +44,21 @@ mutex on self-hosted runners. Uses `lockf(1)` (BSD/macOS) or `flock(1)`
   tests are non-negotiable - the whole product is "two callers serialize
   correctly," so any change to the locking path must be exercised by a
   concurrent-acquire test.
-- Release tagging: every release gets an **immutable patch tag** of the form
-  `vMAJOR.MINOR.PATCH` (e.g. `v1.0.0`, `v1.0.1`, `v1.1.0`) that, once pushed,
-  is never force-moved - this is what downstream callers pin to if they need
-  exact reproducibility. In addition, the **floating major tag** `vMAJOR` (e.g.
-  `v1`, `v2`) is force-updated on every release in that major series so it
-  always points at the latest `v1.x.y` commit. Callers that track `@v1` get
-  automatic minor/patch updates inside the same major series; callers that
-  track `@v1.0.1` stay pinned forever. Both kinds of tags exist in this repo
-  and both are part of the release contract. Use `git tag v1.0.1 HEAD`
-  (immutable) and `git tag -f v1 HEAD` followed by `git push --force origin v1`
-  (floating) when cutting a release.
+- Tracked text is ASCII. Use plain hyphens, `->`, and words instead of Unicode
+  punctuation or decorative status symbols.
+- Release tagging: every release gets a **fixed patch tag** of the form
+  `vMAJOR.MINOR.PATCH` (e.g. `v1.0.0`, `v1.0.1`, `v1.1.0`). The repository's
+  fixed-version-tag ruleset blocks updates and deletions, and publishing its
+  GitHub Release makes the tag and release assets immutable. This is what
+  downstream callers pin to for exact reproducibility. In addition, the
+  **floating major tag** `vMAJOR` (e.g. `v1`, `v2`) is force-updated on every
+  release in that major series so it always points at the latest `v1.x.y`
+  commit. Never attach a GitHub Release to the floating tag; immutability would
+  prevent the next update. Callers that track `@v1` get automatic minor/patch
+  updates inside the same major series; callers that track `@v1.0.1` stay
+  pinned forever. Both kinds of tags exist and are part of the release
+  contract. Cut the fixed tag, move the floating tag, then publish the fixed
+  tag with `gh release create v1.0.1`.
 - The script uses *only* the OS-native command-wrapping lock primitive. Do not
   add a mkdir-based fallback or PID-tracking stale recovery - the kernel
   handles process-death cleanup for both `lockf` and `flock`. If you find

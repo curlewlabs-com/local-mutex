@@ -573,16 +573,18 @@ they do not, and no choice of `lock-dir` will make them serialize.
 
 ## Releasing
 
-Every release ships **both** an immutable patch tag (`vMAJOR.MINOR.PATCH`, e.g.
-`v2.0.1`) and a floating major tag (`vMAJOR`, e.g. `v2`). Users who want exact
-reproducibility pin to `@v2.0.1`; users who want automatic minor/patch updates
-inside the v2 series pin to `@v2`. Both tag kinds exist for every release. See
-[AGENTS.md](AGENTS.md) for the full contract.
+Every release ships **both** a fixed patch tag (`vMAJOR.MINOR.PATCH`, e.g.
+`v2.0.1`) and a floating major tag (`vMAJOR`, e.g. `v2`). The repository blocks
+updates and deletions of fixed patch tags, and publishing the GitHub Release
+makes its tag and release assets immutable. Users who want exact reproducibility
+pin to `@v2.0.1`; users who want automatic minor/patch updates inside the v2
+series pin to `@v2`. The floating tag never gets a GitHub Release, because it
+must remain movable. See [AGENTS.md](AGENTS.md) for the full contract.
 
 After merging to `main`:
 
 ```sh
-# Immutable patch tag - never force-moved once pushed.
+# Fixed patch tag - protected from updates and deletion.
 git tag v2.x.y HEAD
 git push origin v2.x.y
 
@@ -590,7 +592,7 @@ git push origin v2.x.y
 git tag -f v2 HEAD
 git push --force origin v2
 
-# GitHub release for the marketplace.
+# Publishing the GitHub release locks the patch tag and release assets.
 gh release create v2.x.y --title "v2.x.y" --notes "changelog here"
 ```
 
