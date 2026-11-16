@@ -29,12 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Run actionlint
-        # Pin the installer script to a specific actionlint release commit
-        # rather than tracking `main`. The commit hash corresponds to
-        # rhysd/actionlint tag v1.7.12, and the installer script downloads
-        # the matching versioned binary. Hard-pin per the repo's dependency
-        # policy: floating refs silently follow whatever HEAD happens to be.
+        # Pin the installer script to a commit rather than tracking `main`,
+        # so the script cannot change under this job, and name the release
+        # it downloads. Hard-pin per the repo's dependency policy: floating
+        # refs silently follow whatever HEAD happens to be. Renovate moves
+        # the release; the script's commit moves by hand, and need not match.
         run: |
+          # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v(?<version>.+)$
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash) 1.7.12
           ./actionlint -color
 
