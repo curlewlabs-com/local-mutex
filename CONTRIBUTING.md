@@ -23,16 +23,18 @@ rework.
 CI runs these on every push to `main` and every pull request against it:
 
 ```sh
-shellcheck lib/local-mutex.sh
+shellcheck lib/local-mutex.sh .github/within-infinite.sh
 actionlint
 ```
 
 The integration tests are the steps of `.github/workflows/ci.yml`, and run on
-GitHub's hosted runners: `ubuntu-latest`, which takes the lock with `flock`,
-and `macos-latest`, which takes it with `lockf`. A new test goes in that file
-beside them, and a change to the locking path needs a test where two callers
-contend. CI does not reproduce several runners sharing one machine; README.md's
-"Manual validation on a shared runner host" checks that with two terminals.
+GitHub's hosted runners: `ubuntu-latest`, which takes the lock with `flock`, and
+`macos-latest`, which takes it with `lockf`. A new test goes in that file beside
+them, and a change to the locking path needs a test where two callers contend. A
+test waits through `.github/within-infinite.sh`, never a fixed sleep or a bound
+on elapsed seconds (AGENTS.md says why). CI does not reproduce several runners
+sharing one machine; README.md's "Manual validation on a shared runner host"
+checks that with two terminals.
 
 Keep each pull request to one change, with its test, and describe the why in
 its body. AGENTS.md holds the repository's rules and its release steps.
