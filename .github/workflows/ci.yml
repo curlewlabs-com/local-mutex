@@ -17,13 +17,13 @@ jobs:
       - name: Shellcheck
         run: shellcheck lib/local-mutex.sh
 
-  # actionlint covers two gaps shellcheck alone misses:
-  # 1. action.yml is YAML (shellcheck only reads shell)
-  # 2. Inline `run:` blocks in this very workflow contain hundreds of lines
-  #    of shell that need the same scrutiny as lib/local-mutex.sh.
-  # actionlint understands GitHub Actions syntax AND wraps shellcheck on
-  # every inline run block, so adding it here applies the AGENTS.md
-  # "all scripts must pass shellcheck" rule to the workflow itself.
+  # actionlint covers what shellcheck alone misses in this workflow: its
+  # Actions syntax, and the hundreds of lines of shell in its inline `run:`
+  # blocks, which it passes through shellcheck so the AGENTS.md "all scripts
+  # must pass shellcheck" rule reaches them. It reads action.yml only as the
+  # metadata of the action this workflow calls with `uses: ./`, so a call
+  # with a missing or undeclared input fails; the shell in action.yml's own
+  # `run:` steps is not linted by either job.
   actionlint:
     runs-on: ubuntu-latest
     steps:
