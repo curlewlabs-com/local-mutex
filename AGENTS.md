@@ -8,8 +8,8 @@ mutex on self-hosted runners. Uses `lockf(1)` (BSD/macOS) or `flock(1)`
 
 ## Rules
 
-- `lib/local-mutex.sh` must use `#!/bin/sh` and pass `shellcheck` clean with no
-  warnings.
+- `lib/local-mutex.sh` and `.github/within-infinite.sh` must use `#!/bin/sh`
+  and pass `shellcheck` clean with no warnings.
 - No external dependencies beyond `sh`, `lockf` or `flock`, a SHA-256 command
   (`sha256sum` from GNU coreutils on Linux, `shasum` from Perl on macOS), and
   standard POSIX utilities.
@@ -44,6 +44,15 @@ mutex on self-hosted runners. Uses `lockf(1)` (BSD/macOS) or `flock(1)`
   tests are non-negotiable - the whole product is "two callers serialize
   correctly," so any change to the locking path must be exercised by a
   concurrent-acquire test.
+- A test never asserts how fast something happens. How soon the kernel frees a
+  killed holder's lock, or a hosted runner schedules a process, is not part of
+  the contract, so a wait - for a lock, a freed lock, or a line another process
+  logs - goes through `.github/within-infinite.sh`, which holds the one
+  deadline and is long enough that only a hang reaches it. A holder a test
+  expects to be freed runs until the test releases it, so a lock that is never
+  freed reaches that deadline instead of ending on its own first. A fixed
+  `sleep` to order two processes, or a bound on elapsed seconds, turns a slow
+  runner into a red build.
 - Tracked text is ASCII. Use plain hyphens, `->`, and words instead of Unicode
   punctuation or decorative status symbols.
 - Release tagging: every release gets a **fixed patch tag** of the form
@@ -94,7 +103,7 @@ mutex on self-hosted runners. Uses `lockf(1)` (BSD/macOS) or `flock(1)`
   holder name is diagnostic ONLY: nothing may read it to decide whether the lock
   is free, and no staleness may be inferred from it - that is the same line this
   file draws against PID-tracking stale recovery, and a stale breadcrumb after a
-  `SIGKILL` must never delay the next acquirer. There is a test for exactly that.
+  `SIGKILL` must never block the next acquirer. There is a test for exactly that.
 - Reject any `name` containing control characters (bytes `0x00`-`0x1F` or
   `0x7F`). The raw `name` flows into `::notice::` output unfiltered; a literal
   newline would split the annotation into two lines and the runner's log parser
