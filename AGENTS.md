@@ -8,8 +8,11 @@ mutex on self-hosted runners. Uses `lockf(1)` (BSD/macOS) or `flock(1)`
 
 ## Rules
 
-- `lib/local-mutex.sh` and `.github/within-infinite.sh` must use `#!/bin/sh`
-  and pass `shellcheck` clean with no warnings.
+- Every script in `lib/`, and `.github/within-infinite.sh`, must use
+  `#!/bin/sh` and pass `shellcheck` clean with no warnings.
+- Each `run:` in an `action.yml` is one call of an executable script in
+  `lib/`, with its inputs passed through `env:`, never a `${{ }}` pasted into
+  the shell, so shellcheck reads all of the shell a consumer's job runs.
 - No external dependencies beyond `sh`, `lockf` or `flock`, a SHA-256 command
   (`sha256sum` from GNU coreutils on Linux, `shasum` from Perl on macOS), and
   standard POSIX utilities.
