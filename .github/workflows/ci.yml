@@ -10,39 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  shellcheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Shellcheck
-        run: shellcheck lib/*.sh .github/within-infinite.sh
-
-  # actionlint covers what shellcheck alone misses in this workflow: its
-  # Actions syntax, and the hundreds of lines of shell in its inline `run:`
-  # blocks, which it passes through shellcheck so the AGENTS.md "all scripts
-  # must pass shellcheck" rule reaches them. It reads action.yml only as the
-  # metadata of the action this workflow calls with `uses: ./`, so a call
-  # with a missing or undeclared input fails; the shell in action.yml's own
-  # `run:` steps is not linted by either job.
-  actionlint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Run actionlint
-        # Pin the installer script to a commit rather than tracking `main`,
-        # so the script cannot change under this job, and name the release
-        # it downloads. Hard-pin per the repo's dependency policy: floating
-        # refs silently follow whatever HEAD happens to be. Renovate moves
-        # the release; the script's commit moves by hand, and need not match.
-        run: |
-          # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v(?<version>.+)$
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash) 1.7.12
-          ./actionlint -color
-
   # Matrix on both OSes because the script branches on which lock binary is
   # available. Linux GitHub-hosted runners have flock; macOS GitHub-hosted
   # runners have lockf. Both must pass identical behavior tests.
@@ -644,7 +611,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          name: ''
+          name: ""
           run: echo "should not run"
 
       - name: Verify empty name was rejected
@@ -660,7 +627,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          name: '   '
+          name: "   "
           run: echo "should not run"
 
       - name: Verify whitespace name was rejected
@@ -677,7 +644,7 @@ jobs:
         uses: ./
         with:
           name: t-empty-run
-          run: ''
+          run: ""
 
       - name: Verify empty run was rejected
         env:
@@ -693,7 +660,7 @@ jobs:
         uses: ./
         with:
           name: t-ws-run
-          run: '   '
+          run: "   "
 
       - name: Verify whitespace run was rejected
         env:
@@ -1556,10 +1523,28 @@ jobs:
   baseline:
     # The checks every Curlew Labs repository runs, in one place:
     # https://github.com/curlewlabs-com/ci-baseline
+    # Its actionlint also reads action.yml as the metadata of every `uses: ./`
+    # call above, so a call with a missing or undeclared input fails.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: curlewlabs-com/ci-baseline@c82082df9a3c5e6dab047d9ddb92f130f1537d8e # v0.1.1
+      - uses: curlewlabs-com/ci-baseline@f05f17a38ba2dfbaf0cde130a375b346e9a923a2 # v0.2.0
+
+  conclusion:
+    # The one check branch protection requires, so adding or renaming a job
+    # above needs no settings change - only this list.
+    needs: [integration-test, setup-test, baseline]
+    runs-on: ubuntu-24.04
+    if: always()
+    steps:
+      - name: Require every job to pass
+        env:
+          INTEGRATION_TEST: ${{ needs.integration-test.result }}
+          SETUP_TEST: ${{ needs.setup-test.result }}
+          BASELINE: ${{ needs.baseline.result }}
+        run: |
+          test "$INTEGRATION_TEST" = success && test "$SETUP_TEST" = success &&
+            test "$BASELINE" = success

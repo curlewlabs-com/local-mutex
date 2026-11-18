@@ -1,0 +1,5 @@
+# The style the shell scripts are written in, which CI's shfmt holds them to.
+[*.sh]
+indent_style = space
+indent_size = 4
+switch_case_indent = true

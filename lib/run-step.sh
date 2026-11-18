@@ -7,7 +7,7 @@ set -eu
 # Redirect the inner command's GITHUB_OUTPUT writes to a
 # separate file so they can be propagated by the caller.
 inner_output="${RUNNER_TEMP:-/tmp}/local-mutex-output-$$"
-: > "$inner_output"
+: >"$inner_output"
 outer_output="$GITHUB_OUTPUT"
 GITHUB_OUTPUT="$inner_output"
 export GITHUB_OUTPUT
@@ -24,7 +24,7 @@ sh "$GITHUB_ACTION_PATH/lib/local-mutex.sh" "$INPUT_NAME" "$INPUT_RUN" "$INPUT_L
 # output stream.
 GITHUB_OUTPUT="$outer_output"
 export GITHUB_OUTPUT
-cat "$inner_output" >> "$GITHUB_OUTPUT"
-printf 'output-file=%s\n' "$inner_output" >> "$GITHUB_OUTPUT"
+cat "$inner_output" >>"$GITHUB_OUTPUT"
+printf 'output-file=%s\n' "$inner_output" >>"$GITHUB_OUTPUT"
 
 exit "$rc"

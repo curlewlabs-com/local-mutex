@@ -26,21 +26,21 @@ fi
 nl=$(printf '\nx')
 nl=${nl%x}
 case "$cli$INPUT_LOCK_DIR" in
-*"$nl"*)
-    printf '::error::local-mutex setup: refusing to export a value containing a newline\n' >&2
-    exit 1
-    ;;
+    *"$nl"*)
+        printf '::error::local-mutex setup: refusing to export a value containing a newline\n' >&2
+        exit 1
+        ;;
 esac
 
-printf 'LOCAL_MUTEX_CLI=%s\n' "$cli" >> "$GITHUB_ENV"
-printf 'cli=%s\n' "$cli" >> "$GITHUB_OUTPUT"
+printf 'LOCAL_MUTEX_CLI=%s\n' "$cli" >>"$GITHUB_ENV"
+printf 'cli=%s\n' "$cli" >>"$GITHUB_OUTPUT"
 
 # Written only when the caller asked for one. An empty value would be
 # read as unset by the CLI's own `:-` default anyway, but leaving the
 # variable absent keeps "nobody set a lock-dir" distinguishable from
 # "somebody set an empty one" for anything that reads the environment.
 if [ -n "$INPUT_LOCK_DIR" ]; then
-    printf 'LOCAL_MUTEX_LOCK_DIR=%s\n' "$INPUT_LOCK_DIR" >> "$GITHUB_ENV"
+    printf 'LOCAL_MUTEX_LOCK_DIR=%s\n' "$INPUT_LOCK_DIR" >>"$GITHUB_ENV"
 fi
 
 printf '::notice::local-mutex: CLI available at %s\n' "$cli" >&2
