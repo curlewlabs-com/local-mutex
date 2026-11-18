@@ -23,7 +23,7 @@ rework.
 CI runs these on every push to `main` and every pull request against it:
 
 ```sh
-shellcheck lib/local-mutex.sh .github/within-infinite.sh
+shellcheck lib/*.sh .github/within-infinite.sh
 actionlint
 ```
 

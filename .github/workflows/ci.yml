@@ -14,8 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Shellcheck
-        run: shellcheck lib/local-mutex.sh .github/within-infinite.sh
+        run: shellcheck lib/*.sh .github/within-infinite.sh
 
   # actionlint covers what shellcheck alone misses in this workflow: its
   # Actions syntax, and the hundreds of lines of shell in its inline `run:`
@@ -28,6 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Run actionlint
         # Pin the installer script to a commit rather than tracking `main`,
         # so the script cannot change under this job, and name the release
@@ -56,6 +60,8 @@ jobs:
       CUSTOM_TEST_VAR: expected-value
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Pre-compute SHA-256 lockfile basenames for every fixed test name
       # used below. Each subsequent step references $H_<UPPER_NAME> when
@@ -116,9 +122,11 @@ jobs:
           run: exit 42
 
       - name: Failed command fails the step
+        env:
+          OUTCOME: ${{ steps.failed-cmd.outcome }}
         run: |
-          [ "${{ steps.failed-cmd.outcome }}" = "failure" ] \
-            || (echo "Expected failure outcome, got: ${{ steps.failed-cmd.outcome }}" && exit 1)
+          [ "${OUTCOME}" = "failure" ] \
+            || (echo "Expected failure outcome, got: ${OUTCOME}" && exit 1)
           echo "Failed command fails the step: OK"
 
       - name: Multi-line run with set -e aborts on first failure
@@ -134,8 +142,10 @@ jobs:
             echo "second" >> /tmp/multiline-marker
 
       - name: Verify second line did not run
+        env:
+          OUTCOME: ${{ steps.multiline-set-e.outcome }}
         run: |
-          [ "${{ steps.multiline-set-e.outcome }}" = "failure" ] \
+          [ "${OUTCOME}" = "failure" ] \
             || (echo "Expected failure on set -e abort" && exit 1)
           content=$(cat /tmp/multiline-marker)
           [ "$content" = "first" ] \
@@ -638,9 +648,11 @@ jobs:
           run: echo "should not run"
 
       - name: Verify empty name was rejected
+        env:
+          OUTCOME: ${{ steps.empty-name.outcome }}
         run: |
-          [ "${{ steps.empty-name.outcome }}" = "failure" ] \
-            || (echo "Expected failure on empty name, got: ${{ steps.empty-name.outcome }}" && exit 1)
+          [ "${OUTCOME}" = "failure" ] \
+            || (echo "Expected failure on empty name, got: ${OUTCOME}" && exit 1)
           echo "Empty name rejection: OK"
 
       - name: Whitespace-only name fails clean
@@ -652,8 +664,10 @@ jobs:
           run: echo "should not run"
 
       - name: Verify whitespace name was rejected
+        env:
+          OUTCOME: ${{ steps.ws-name.outcome }}
         run: |
-          [ "${{ steps.ws-name.outcome }}" = "failure" ] \
+          [ "${OUTCOME}" = "failure" ] \
             || (echo "Expected failure on whitespace name" && exit 1)
           echo "Whitespace name rejection: OK"
 
@@ -666,8 +680,10 @@ jobs:
           run: ''
 
       - name: Verify empty run was rejected
+        env:
+          OUTCOME: ${{ steps.empty-run.outcome }}
         run: |
-          [ "${{ steps.empty-run.outcome }}" = "failure" ] \
+          [ "${OUTCOME}" = "failure" ] \
             || (echo "Expected failure on empty run" && exit 1)
           echo "Empty run rejection: OK"
 
@@ -680,8 +696,10 @@ jobs:
           run: '   '
 
       - name: Verify whitespace run was rejected
+        env:
+          OUTCOME: ${{ steps.ws-run.outcome }}
         run: |
-          [ "${{ steps.ws-run.outcome }}" = "failure" ] \
+          [ "${OUTCOME}" = "failure" ] \
             || (echo "Expected failure on whitespace run" && exit 1)
           echo "Whitespace run rejection: OK"
 
@@ -697,9 +715,11 @@ jobs:
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh only-one-arg 2>/tmp/argc-err
 
       - name: Verify wrong arg count was rejected
+        env:
+          OUTCOME: ${{ steps.bad-argc.outcome }}
         run: |
-          [ "${{ steps.bad-argc.outcome }}" = "failure" ] \
-            || (echo "Expected failure on one-arg invocation, got: ${{ steps.bad-argc.outcome }}" && cat /tmp/argc-err && exit 1)
+          [ "${OUTCOME}" = "failure" ] \
+            || (echo "Expected failure on one-arg invocation, got: ${OUTCOME}" && cat /tmp/argc-err && exit 1)
           grep -q 'expected 2 or 3 arguments' /tmp/argc-err \
             || (echo "Expected arg-count error message, got:" && cat /tmp/argc-err && exit 1)
           rm -f /tmp/argc-err
@@ -716,8 +736,10 @@ jobs:
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh n c /tmp extra 2>/tmp/too-many-err
 
       - name: Verify too-many-args was rejected
+        env:
+          OUTCOME: ${{ steps.too-many-argc.outcome }}
         run: |
-          [ "${{ steps.too-many-argc.outcome }}" = "failure" ] \
+          [ "${OUTCOME}" = "failure" ] \
             || (echo "Expected failure on four-arg invocation" && cat /tmp/too-many-err && exit 1)
           grep -q 'expected 2 or 3 arguments' /tmp/too-many-err \
             || (echo "Expected arg-count error, got:" && cat /tmp/too-many-err && exit 1)
@@ -887,9 +909,11 @@ jobs:
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh "$name" 'echo "should not run"' 2>/tmp/newline-err
 
       - name: Verify newline name was rejected
+        env:
+          OUTCOME: ${{ steps.newline-name.outcome }}
         run: |
-          [ "${{ steps.newline-name.outcome }}" = "failure" ] \
-            || (echo "Expected failure on newline name, got: ${{ steps.newline-name.outcome }}" && cat /tmp/newline-err && exit 1)
+          [ "${OUTCOME}" = "failure" ] \
+            || (echo "Expected failure on newline name, got: ${OUTCOME}" && cat /tmp/newline-err && exit 1)
           grep -q 'control characters' /tmp/newline-err \
             || (echo "Expected control-char error message, got:" && cat /tmp/newline-err && exit 1)
           rm -f /tmp/newline-err
@@ -909,8 +933,10 @@ jobs:
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh "$name" 'echo "should not run"' 2>/tmp/tab-err
 
       - name: Verify tab name was rejected
+        env:
+          OUTCOME: ${{ steps.tab-name.outcome }}
         run: |
-          [ "${{ steps.tab-name.outcome }}" = "failure" ] \
+          [ "${OUTCOME}" = "failure" ] \
             || (echo "Expected failure on tab name" && cat /tmp/tab-err && exit 1)
           grep -q 'control characters' /tmp/tab-err \
             || (echo "Expected control-char error message, got:" && cat /tmp/tab-err && exit 1)
@@ -1099,8 +1125,10 @@ jobs:
             printf 'another-key=42\n' >> "$GITHUB_OUTPUT"
 
       - name: Verify output-file is set and contains inner writes
+        env:
+          OUTPUT_FILE: ${{ steps.output-test.outputs.output-file }}
         run: |
-          output_file="${{ steps.output-test.outputs.output-file }}"
+          output_file="${OUTPUT_FILE}"
           [ -n "$output_file" ] \
             || (echo "Expected output-file to be set" && exit 1)
           [ -f "$output_file" ] \
@@ -1114,15 +1142,20 @@ jobs:
       - name: Propagate inner outputs via output-file
         id: propagated
         shell: sh
+        env:
+          OUTPUT_FILE: ${{ steps.output-test.outputs.output-file }}
         run: |
-          cat "${{ steps.output-test.outputs.output-file }}" >> "$GITHUB_OUTPUT"
+          cat "${OUTPUT_FILE}" >> "$GITHUB_OUTPUT"
 
       - name: Verify propagated outputs are accessible as step outputs
+        env:
+          TEST_KEY: ${{ steps.propagated.outputs.test-key }}
+          ANOTHER_KEY: ${{ steps.propagated.outputs.another-key }}
         run: |
-          [ "${{ steps.propagated.outputs.test-key }}" = "hello-world" ] \
-            || (echo "Expected propagated test-key=hello-world, got: ${{ steps.propagated.outputs.test-key }}" && exit 1)
-          [ "${{ steps.propagated.outputs.another-key }}" = "42" ] \
-            || (echo "Expected propagated another-key=42, got: ${{ steps.propagated.outputs.another-key }}" && exit 1)
+          [ "${TEST_KEY}" = "hello-world" ] \
+            || (echo "Expected propagated test-key=hello-world, got: ${TEST_KEY}" && exit 1)
+          [ "${ANOTHER_KEY}" = "42" ] \
+            || (echo "Expected propagated another-key=42, got: ${ANOTHER_KEY}" && exit 1)
           echo "Output propagation round-trip: OK"
 
       - name: Working directory propagates
@@ -1300,8 +1333,10 @@ jobs:
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-rel 'true' 'relative/path' 2>/tmp/rel-err
 
       - name: Verify relative lock-dir was rejected
+        env:
+          OUTCOME: ${{ steps.rel-lockdir.outcome }}
         run: |
-          [ "${{ steps.rel-lockdir.outcome }}" = "failure" ] \
+          [ "${OUTCOME}" = "failure" ] \
             || (echo "Expected failure on relative lock-dir" && exit 1)
           grep -q 'must be an absolute path' /tmp/rel-err \
             || (echo "Expected absolute-path error, got:" && cat /tmp/rel-err && exit 1)
@@ -1318,8 +1353,10 @@ jobs:
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-noex 'true' '/this-path-should-not-exist-xyz123' 2>/tmp/noex-err
 
       - name: Verify non-existent lock-dir was rejected
+        env:
+          OUTCOME: ${{ steps.missing-lockdir.outcome }}
         run: |
-          [ "${{ steps.missing-lockdir.outcome }}" = "failure" ] \
+          [ "${OUTCOME}" = "failure" ] \
             || (echo "Expected failure on non-existent lock-dir" && exit 1)
           grep -q 'does not exist or is not a directory' /tmp/noex-err \
             || (echo "Expected non-existent error, got:" && cat /tmp/noex-err && exit 1)
@@ -1342,8 +1379,10 @@ jobs:
           sh "$GITHUB_WORKSPACE"/lib/local-mutex.sh t-ro 'true' "$test_dir" 2>/tmp/ro-err
 
       - name: Verify non-writable lock-dir was rejected
+        env:
+          OUTCOME: ${{ steps.ro-lockdir.outcome }}
         run: |
-          [ "${{ steps.ro-lockdir.outcome }}" = "failure" ] \
+          [ "${OUTCOME}" = "failure" ] \
             || (echo "Expected failure on non-writable lock-dir" && exit 1)
           grep -q 'is not writable' /tmp/ro-err \
             || (echo "Expected non-writable error, got:" && cat /tmp/ro-err && exit 1)
@@ -1388,6 +1427,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Compute lockfile hashes for setup test names
         run: |
@@ -1417,6 +1458,8 @@ jobs:
         uses: ./setup
 
       - name: Later steps see a usable CLI
+        env:
+          CLI: ${{ steps.setup.outputs.cli }}
         run: |
           [ -n "${LOCAL_MUTEX_CLI:-}" ] \
             || (echo "Expected LOCAL_MUTEX_CLI to be set after setup" && exit 1)
@@ -1425,8 +1468,8 @@ jobs:
           # The output and the environment must name the same script, or a
           # caller that passes the path explicitly and one that reads it from
           # the environment would take locks through different files.
-          [ "${{ steps.setup.outputs.cli }}" = "$LOCAL_MUTEX_CLI" ] \
-            || (echo "Output and env disagree: ${{ steps.setup.outputs.cli }} vs $LOCAL_MUTEX_CLI" && exit 1)
+          [ "${CLI}" = "$LOCAL_MUTEX_CLI" ] \
+            || (echo "Output and env disagree: ${CLI} vs $LOCAL_MUTEX_CLI" && exit 1)
           # No `..` left in the exported path: it is consumed by processes in
           # other working directories, where a relative segment resolves
           # somewhere else or nowhere.
@@ -1509,3 +1552,14 @@ jobs:
           test ! -f "/tmp/local-mutex-${H_T_SETUP_LOCKDIR}.lock" \
             || (echo "Lock leaked to /tmp despite the exported lock-dir" && exit 1)
           echo "Exported lock-dir honored: OK"
+
+  baseline:
+    # The checks every Curlew Labs repository runs, in one place:
+    # https://github.com/curlewlabs-com/ci-baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: curlewlabs-com/ci-baseline@c82082df9a3c5e6dab047d9ddb92f130f1537d8e # v0.1.1
