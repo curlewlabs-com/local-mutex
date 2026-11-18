@@ -7,7 +7,7 @@ When two runners hit `pod install --repo-update`, `claude update`,
 each other silently.
 
 `local-mutex` wraps any shell command in a kernel-level file lock
-([`lockf(1)`](https://man.freebsd.org/cgi/man.cgi?lockf(1)) on macOS/BSD,
+([`lockf(1)`](<https://man.freebsd.org/cgi/man.cgi?lockf(1)>) on macOS/BSD,
 [`flock(1)`](https://man7.org/linux/man-pages/man1/flock.1.html) on Linux,
 whichever is on `PATH`). The lock is acquired before your command runs, held
 for the duration, and released automatically when it exits - including on
@@ -235,7 +235,7 @@ lock for each unit of work inside the loop:
 - name: Garbage-collect the shared cache
   uses: curlewlabs-com/local-mutex@v2
   with:
-    name: cache-gc                       # one outer lock: one sweep at a time
+    name: cache-gc # one outer lock: one sweep at a time
     run: |
       list_cold_keys | while IFS= read -r key; do
         # Each reclaim runs under the SAME per-key lock the writers hold, so
@@ -282,7 +282,7 @@ script those steps call - can reach the CLI:
 - uses: curlewlabs-com/local-mutex/setup@v2
 
 - name: Run the checks
-  run: ./scripts/check.sh          # takes the lock around its own install
+  run: ./scripts/check.sh # takes the lock around its own install
 ```
 
 ```sh
@@ -348,12 +348,12 @@ lock was taken instantly and the wrapped command is what hung - and they want
 opposite fixes. The `acquired` line separates them, and the two elapsed figures
 say which side was pathological:
 
-| What you see | What it means |
-| --- | --- |
-| `waiting`, then nothing | Still blocked. The holder named on the wait line is what to chase. |
+| What you see                                  | What it means                                                              |
+| --------------------------------------------- | -------------------------------------------------------------------------- |
+| `waiting`, then nothing                       | Still blocked. The holder named on the wait line is what to chase.         |
 | `acquired ... after waiting 0s`, then nothing | Lock was free. The wrapped command is the hang; the lock is a red herring. |
-| `acquired ... after waiting 900s` | Real contention. Something held this lock for 15 minutes. |
-| `released ... after holding 900s` | This caller was that something. |
+| `acquired ... after waiting 900s`             | Real contention. Something held this lock for 15 minutes.                  |
+| `released ... after holding 900s`             | This caller was that something.                                            |
 
 The holder identity comes from `GITHUB_RUN_ID` / `GITHUB_JOB` /
 `GITHUB_RUN_ATTEMPT` when they are set, and the pid otherwise, so it is useful
@@ -362,8 +362,8 @@ lock is held and removed on release.
 
 That breadcrumb is **diagnostic only and never load-bearing**: nothing reads it
 to decide whether the lock is free, and no staleness is inferred from it. A
-`SIGKILL`ed holder leaves the file behind, which is why the wait line says *last
-recorded* holder - the kernel, not that file, is what releases the lock, so the
+`SIGKILL`ed holder leaves the file behind, which is why the wait line says _last
+recorded_ holder - the kernel, not that file, is what releases the lock, so the
 next acquirer takes it immediately and the `after waiting 0s` on its own
 `acquired` line says so.
 
@@ -488,14 +488,14 @@ calling step.
 
 ## Comparison with the alternatives
 
-| | local-mutex | `concurrency:` (built-in) |
-|---|---|---|
-| Coordination scope | Same kernel (one machine, no VM boundary) | GitHub API (cross-machine) |
-| Granularity | Per-step / per-resource | Per-job or per-workflow |
-| Latency to acquire | Microseconds (kernel) | Queues whole jobs (cancels with `cancel-in-progress: true`) |
-| Setup required | None - composite action only | None - built into Actions |
-| Stale lock recovery | Automatic (kernel-managed) | n/a |
-| Cross-runner-machine | No | Yes |
+|                      | local-mutex                               | `concurrency:` (built-in)                                   |
+| -------------------- | ----------------------------------------- | ----------------------------------------------------------- |
+| Coordination scope   | Same kernel (one machine, no VM boundary) | GitHub API (cross-machine)                                  |
+| Granularity          | Per-step / per-resource                   | Per-job or per-workflow                                     |
+| Latency to acquire   | Microseconds (kernel)                     | Queues whole jobs (cancels with `cancel-in-progress: true`) |
+| Setup required       | None - composite action only              | None - built into Actions                                   |
+| Stale lock recovery  | Automatic (kernel-managed)                | n/a                                                         |
+| Cross-runner-machine | No                                        | Yes                                                         |
 
 **Pick `local-mutex` when** runners share a machine and the bottleneck is a
 local resource - you want all your runners to keep running in parallel except
@@ -616,11 +616,6 @@ under either license.
 By submitting a contribution for inclusion in this project, you agree that it
 is dual licensed as above, without any additional terms or conditions.
 
-[local-cache-save]:
-https://github.com/curlewlabs-com/local-cache/blob/main/save/action.yml
-
-[notice-docs]:
-https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-a-notice-message
-
-[concurrency-docs]:
-https://docs.github.com/en/actions/using-jobs/using-concurrency
+[local-cache-save]: https://github.com/curlewlabs-com/local-cache/blob/main/save/action.yml
+[notice-docs]: https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-a-notice-message
+[concurrency-docs]: https://docs.github.com/en/actions/using-jobs/using-concurrency

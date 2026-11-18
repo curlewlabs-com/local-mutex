@@ -1,4 +1,4 @@
-name: 'Local Mutex Setup'
+name: "Local Mutex Setup"
 description: >-
   Put the local-mutex CLI on the job environment so a later step, or a build
   script it calls, can take a lock without knowing where the runner checked
@@ -34,7 +34,7 @@ inputs:
       its siblings on the same machine. It is validated by the CLI on each
       call, not here, so one place decides what a usable lock directory is.
     required: false
-    default: ''
+    default: ""
 
 outputs:
   cli:
@@ -44,7 +44,7 @@ outputs:
     value: ${{ steps.resolve.outputs.cli }}
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
     - name: Export the local-mutex CLI path
       id: resolve

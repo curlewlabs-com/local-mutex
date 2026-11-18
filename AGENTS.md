@@ -71,7 +71,7 @@ mutex on self-hosted runners. Uses `lockf(1)` (BSD/macOS) or `flock(1)`
   pinned forever. Both kinds of tags exist and are part of the release
   contract. Cut the fixed tag, move the floating tag, then publish the fixed
   tag with `gh release create v1.0.1`.
-- The script uses *only* the OS-native command-wrapping lock primitive. Do not
+- The script uses _only_ the OS-native command-wrapping lock primitive. Do not
   add a mkdir-based fallback or PID-tracking stale recovery - the kernel
   handles process-death cleanup for both `lockf` and `flock`. If you find
   yourself wanting one of those, you have a different problem.

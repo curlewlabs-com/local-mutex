@@ -33,32 +33,32 @@ cmd=$2
 # child mid-walk, then kills the children before the parent. pgrep -P is on
 # both the Linux and the macOS runners.
 kill_tree() {
-  kill -STOP "$1" 2>/dev/null || true
-  for child in $(pgrep -P "$1" 2>/dev/null); do
-    kill_tree "$child"
-  done
-  kill -KILL "$1" 2>/dev/null || true
+    kill -STOP "$1" 2>/dev/null || true
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+        kill_tree "$child"
+    done
+    kill -KILL "$1" 2>/dev/null || true
 }
 
 done_file=$(mktemp)
 rm -f "$done_file"
 
 (
-  sh -c "$cmd" && rc=0 || rc=$?
-  echo "$rc" >"$done_file.tmp"
-  mv "$done_file.tmp" "$done_file"
+    sh -c "$cmd" && rc=0 || rc=$?
+    echo "$rc" >"$done_file.tmp"
+    mv "$done_file.tmp" "$done_file"
 ) &
 runner=$!
 
 ticks=0
 until [ -e "$done_file" ]; do
-  if [ "$ticks" -ge $((INFINITE_S * TICKS_PER_S)) ]; then
-    kill_tree "$runner"
-    echo "FAIL: $what did not finish within ${INFINITE_S}s" >&2
-    exit 1
-  fi
-  sleep "$TICK_S"
-  ticks=$((ticks + 1))
+    if [ "$ticks" -ge $((INFINITE_S * TICKS_PER_S)) ]; then
+        kill_tree "$runner"
+        echo "FAIL: $what did not finish within ${INFINITE_S}s" >&2
+        exit 1
+    fi
+    sleep "$TICK_S"
+    ticks=$((ticks + 1))
 done
 
 wait "$runner" || true
